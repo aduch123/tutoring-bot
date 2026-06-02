@@ -564,6 +564,16 @@ async def main_async():
     scheduler = setup_scheduler(app)
     scheduler.start()
 
+    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+    if render_url:
+        import urllib.request
+        def _ping():
+            try:
+                urllib.request.urlopen(render_url, timeout=5)
+            except Exception:
+                pass
+        scheduler.add_job(_ping, IntervalTrigger(minutes=10))
+
     from services.notification_service import job_generate_sessions
     await job_generate_sessions()
 
