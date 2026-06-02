@@ -503,7 +503,13 @@ async def _handle_upload_select(update: Update,
 def run_dummy_server():
     # Render provides the PORT variable; default to 8080 if local
     port = int(os.environ.get("PORT", 8080))
-    handler = http.server.SimpleHTTPRequestHandler
+    class handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        def log_message(self, format, *args):
+            pass  # silence access logs
     
     # Allow reuse of the port to prevent address-already-in-use errors
     socketserver.TCPServer.allow_reuse_address = True
@@ -551,6 +557,7 @@ async def main_async():
 
     await app.initialize()
     await app.start()
+    await app.bot.delete_webhook(drop_pending_updates=True)
     await app.updater.start_polling(drop_pending_updates=True)
 
     # Start scheduler AFTER the app is fully running so the bot object is ready
