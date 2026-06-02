@@ -1,4 +1,7 @@
 """Entry point."""
+import threading
+import http.server
+import socketserver
 import asyncio
 import logging
 from telegram import Update
@@ -497,6 +500,17 @@ async def _handle_upload_select(update: Update,
     from handlers.tutor import upload_session_selected
     await upload_session_selected(update, context)
 
+def run_dummy_server():
+    # Render provides the PORT variable; default to 8080 if local
+    port = int(os.environ.get("PORT", 8080))
+    handler = http.server.SimpleHTTPRequestHandler
+    
+    # Allow reuse of the port to prevent address-already-in-use errors
+    socketserver.TCPServer.allow_reuse_address = True
+    
+    with socketserver.TCPServer(("0.0.0.0", port), handler) as httpd:
+        print(f"Dummy server listening on port {port} to satisfy Render.")
+        httpd.serve_forever()
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -561,6 +575,9 @@ async def main_async():
 
 
 def main():
+    # Start a fake web server in a separate background thread
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+
     asyncio.run(main_async())
 
 
