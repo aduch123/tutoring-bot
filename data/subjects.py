@@ -6,19 +6,19 @@ Used in registration (student + tutor) and tutor assignment.
 SUBJECTS = {
     "Grade 1": {
         "Natural": ["Mathematics", "Science", "Physical Education"],
-        "Social": ["Amharic", "English", "Environmental Science"],
+        "Social": ["English", "Environmental Science"],
     },
     "Grade 2": {
         "Natural": ["Mathematics", "Science", "Physical Education"],
-        "Social": ["Amharic", "English", "Environmental Science"],
+        "Social": ["English", "Environmental Science"],
     },
     "Grade 3": {
         "Natural": ["Mathematics", "Science", "Physical Education"],
-        "Social": ["Amharic", "English", "Environmental Science", "Arts"],
+        "Social": ["English", "Environmental Science", "Arts"],
     },
     "Grade 4": {
         "Natural": ["Mathematics", "Science", "Physical Education"],
-        "Social": ["Amharic", "English", "Environmental Science", "Arts"],
+        "Social": ["English", "Environmental Science", "Arts"],
     },
     "Grade 5": {
         "Natural": ["Mathematics", "General Science", "Physical Education"],
@@ -59,23 +59,6 @@ SUBJECTS = {
     "Grade 12 — Social": {
         "Natural": ["Mathematics"],
         "Social": ["Amharic", "English", "History", "Geography", "Economics", "Civics"],
-    },
-    "University": {
-        "Natural": [
-            "Calculus", "Linear Algebra", "Statistics", "Physics", "Chemistry",
-            "Biology", "Computer Science", "Programming", "Data Structures",
-            "Algorithms", "Electrical Engineering", "Civil Engineering",
-            "Mechanical Engineering", "Chemical Engineering",
-        ],
-        "Social": [
-            "Economics", "Accounting", "Management", "Law", "Political Science",
-            "Sociology", "Psychology", "History", "Philosophy", "English",
-            "Literature", "Journalism", "Public Administration",
-        ],
-    },
-    "Other": {
-        "Natural": ["Mathematics", "Science", "Computer Skills"],
-        "Social": ["English", "Amharic", "Other"],
     },
 }
 
