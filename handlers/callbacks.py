@@ -1,7 +1,7 @@
 """Central callback query router."""
 import logging
 from datetime import datetime
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 from config.db import get_db
 from utils.helpers import reply, send
@@ -94,6 +94,63 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "tutor_earnings":
         from handlers.tutor import tutor_earnings
         await tutor_earnings(update, context)
+        
+    elif data.startswith("reupload_docs_done_"):
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        import json
+        parts = data.replace("reupload_docs_done_", "").rsplit("_", 1)
+        tutor_id = parts[0]
+        admin_id = int(parts[1])
+        file_ids = context.user_data.get("reupload_file_ids", [])
+        if not file_ids:
+            await query.answer("Please send at least one file first.", show_alert=True)
+            return
+        with next(get_db()) as db:
+            from repositories.user import UserRepository, TutorRepository
+            tut = TutorRepository(db).get(tutor_id)
+            user = UserRepository(db).get_by_user_id(tutor_id)
+            if tut:
+                tut.cv_file_ids = json.dumps(file_ids)
+                db.commit()
+            full_name = user.full_name if user else tutor_id
+
+        context.user_data.pop("awaiting_doc_reupload", None)
+        context.user_data.pop("reupload_file_ids", None)
+        context.user_data.pop("reupload_tutor_id", None)
+        context.user_data.pop("reupload_admin_id", None)
+
+        await reply(update,
+            "✅ *Documents Re-submitted*\n\n"
+            "Your documents have been sent to the reviewer. "
+            "You will be notified once they are reviewed.")
+
+        await send(context.bot, admin_id,
+            f"📄 *Re-uploaded Documents*\n\n"
+            f"Tutor *{full_name}* (`{tutor_id}`) has re-uploaded their documents.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "📄 Show Documents",
+                    callback_data=f"show_docs_tut_{tutor_id}_{admin_id}")
+            ]]))
+        
+    elif data.startswith("reupload_docs_"):
+        parts = data.replace("reupload_docs_", "").rsplit("_", 1)
+        tutor_id = parts[0]
+        admin_id = parts[1]
+        context.user_data["awaiting_doc_reupload"] = True
+        context.user_data["reupload_tutor_id"] = tutor_id
+        context.user_data["reupload_admin_id"] = admin_id
+        context.user_data["reupload_file_ids"] = []
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        await reply(update,
+            "📤 *Re-upload Documents*\n\n"
+            "Send your files one by one (PDFs or photos).\n"
+            "When you're done tap the Submit button.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "✅ Submit Documents",
+                    callback_data=f"reupload_docs_done_{tutor_id}_{admin_id}")
+            ]]))
 
     # ── Admin — top level ─────────────────────────────────────────────────────
     elif data == "admin_overview":
@@ -323,6 +380,98 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send(context.bot, result["telegram_id"],
                 "🎉 *Your tutor application has been approved!*\n\n"
                 "Welcome to EduConnect. Use /start to access your dashboard.")
+            
+    elif data.startswith("claim_review_tut_"):
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        from repositories.user import UserRepository, TutorRepository
+        import json
+        tutor_id = data.replace("claim_review_tut_", "")
+        with next(get_db()) as db:
+            user = UserRepository(db).get_by_user_id(tutor_id)
+            tut = TutorRepository(db).get(tutor_id)
+            if not user or not tut:
+                await reply(update, "❌ Tutor not found.")
+                return
+            full_name = user.full_name
+            phone = user.phone
+            primary = tut.primary_subjects or "—"
+            secondary = tut.secondary_subjects or "—"
+            experience = tut.experience or "—"
+            max_hours = tut.max_teaching_hours or 3
+
+        admin_user = update.effective_user
+        try:
+            await query.edit_message_text(
+                f"👨‍🏫 *New Tutor Application*\n\n"
+                f"Name: *{full_name}*\n"
+                f"ID: `{tutor_id}`\n\n"
+                f"🔒 Claimed by {admin_user.full_name or admin_user.first_name}",
+                parse_mode="Markdown")
+        except Exception:
+            pass
+
+        await send(context.bot, admin_user.id,
+            f"📋 *Tutor Application Review*\n\n"
+            f"👨‍🏫 *{full_name}*\n"
+            f"{'─'*26}\n"
+            f"🆔  `{tutor_id}`\n"
+            f"📱  {phone}\n"
+            f"★  Primary: {primary}\n"
+            f"○  Secondary: {secondary}\n"
+            f"🎓  Experience: {experience}\n"
+            f"⏱  Max hours/week: {max_hours}\n\n"
+            f"Tap below to view the submitted documents.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "📄 Show Documents",
+                    callback_data=f"show_docs_tut_{tutor_id}_{admin_user.id}")
+            ]]))
+        
+    elif data.startswith("show_docs_tut_"):
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        from repositories.user import UserRepository, TutorRepository
+        import json
+        parts = data.replace("show_docs_tut_", "").rsplit("_", 1)
+        tutor_id, admin_id = parts[0], parts[1]
+        with next(get_db()) as db:
+            tut = TutorRepository(db).get(tutor_id)
+            doc_file_ids = json.loads(tut.cv_file_ids or "[]") if tut else []
+
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        if not doc_file_ids:
+            await reply(update, "⚠️ No documents found for this tutor.")
+        else:
+            for item in doc_file_ids:
+                try:
+                    ftype, fid, fname = item
+                    if ftype == "document":
+                        await context.bot.send_document(
+                            chat_id=update.effective_user.id,
+                            document=fid, caption=fname)
+                    else:
+                        await context.bot.send_photo(
+                            chat_id=update.effective_user.id,
+                            photo=fid, caption=f"ID Photo")
+                except Exception:
+                    pass
+
+        await send(context.bot, update.effective_user.id,
+            "📋 *Review Decision*\n\nAll documents sent above. What is your decision?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "✅ Approve Docs",
+                    callback_data=f"approve_docs_{tutor_id}")],
+                [InlineKeyboardButton(
+                    "🔄 Request Re-upload",
+                    callback_data=f"reject_docs_{tutor_id}_{admin_id}"),
+                 InlineKeyboardButton(
+                    "🚫 Reject & Blacklist",
+                    callback_data=f"blacklist_docs_{tutor_id}")],
+            ]))
 
     elif data.startswith("approve_docs_"):
         tutor_id = data.replace("approve_docs_", "")
@@ -346,12 +495,41 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Use /start any time to see your current status.")
 
     elif data.startswith("reject_docs_"):
-        tutor_id = data.replace("reject_docs_", "")
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        parts = data.replace("reject_docs_", "").rsplit("_", 1)
+        tutor_id = parts[0]
+        admin_id = parts[1] if len(parts) > 1 else str(update.effective_user.id)
         context.user_data["rejecting_docs_tutor"] = tutor_id
+        context.user_data["rejecting_docs_admin_id"] = admin_id
         from ui.keyboards import back
         await reply(update,
             "❌ *Reject Documents*\n\n"
-            "State the reason and which documents need to be re-uploaded:",
+            "Type your rejection reason below.\n"
+            "Be specific about what documents need to be re-uploaded:",
+            reply_markup=back(f"tut_detail_{tutor_id}"))
+    
+    elif data.startswith("blacklist_docs_"):
+        tutor_id = data.replace("blacklist_docs_", "")
+        context.user_data["blacklisting_docs_tutor"] = tutor_id
+        from ui.keyboards import back
+        await reply(update,
+            "🚫 *Reject & Blacklist*\n\n"
+            "⚠️ This will PERMANENTLY blacklist this tutor.\n"
+            "They will never be able to register again.\n\n"
+            "State the reason:",
+            reply_markup=back(f"tut_detail_{tutor_id}"))
+        
+    elif data.startswith("request_video_reupload_"):
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        parts = data.replace("request_video_reupload_", "").rsplit("_", 1)
+        tutor_id = parts[0]
+        admin_id = parts[1] if parts[1] != "0" else str(update.effective_user.id)
+        context.user_data["requesting_video_reupload_tutor"] = tutor_id
+        context.user_data["requesting_video_reupload_admin_id"] = admin_id
+        from ui.keyboards import back
+        await reply(update,
+            "🔄 *Request Video Re-upload*\n\n"
+            "State what is wrong with the video and what needs to be corrected:",
             reply_markup=back(f"tut_detail_{tutor_id}"))
 
     elif data.startswith("approve_video_"):
@@ -371,6 +549,83 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Welcome to EduConnect. An admin will assign students to you.\n"
                 "Use /start to access your dashboard.")
 
+    elif data.startswith("claim_review_video_"):
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        from repositories.user import UserRepository, TutorRepository
+        tutor_id = data.replace("claim_review_video_", "")
+        with next(get_db()) as db:
+            user = UserRepository(db).get_by_user_id(tutor_id)
+            tut = TutorRepository(db).get(tutor_id)
+            if not user or not tut:
+                await reply(update, "❌ Tutor not found.")
+                return
+            full_name = user.full_name
+            video_file_id = tut.video_file_id
+
+        admin_user = update.effective_user
+        try:
+            await query.edit_message_text(
+                f"📹 *New Teaching Video Submitted*\n\n"
+                f"Tutor: *{full_name}*\n"
+                f"ID: `{tutor_id}`\n\n"
+                f"🔒 Claimed by {admin_user.full_name or admin_user.first_name}",
+                parse_mode="Markdown")
+        except Exception:
+            pass
+
+        await send(context.bot, admin_user.id,
+            f"🎬 *Video Review*\n\n"
+            f"Tutor: *{full_name}* (`{tutor_id}`)\n\n"
+            f"Tap below to watch the submitted teaching video.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "🎬 Show Video",
+                    callback_data=f"show_video_tut_{tutor_id}_{admin_user.id}")
+            ]]))
+
+    elif data.startswith("show_video_tut_"):
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        from repositories.user import TutorRepository
+        parts = data.replace("show_video_tut_", "").rsplit("_", 1)
+        tutor_id = parts[0]
+        admin_id = parts[1]
+
+        with next(get_db()) as db:
+            tut = TutorRepository(db).get(tutor_id)
+            video_file_id = tut.video_file_id if tut else None
+
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        if video_file_id:
+            try:
+                await context.bot.send_video(
+                    chat_id=update.effective_user.id,
+                    video=video_file_id,
+                    caption="📹 Teaching video")
+            except Exception:
+                await send(context.bot, update.effective_user.id,
+                    "⚠️ Could not send the video. It may have expired.")
+        else:
+            await send(context.bot, update.effective_user.id,
+                "⚠️ No video found for this tutor.")
+
+        await send(context.bot, update.effective_user.id,
+            "📋 *Review Decision*\n\nVideo sent above. What is your decision?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "✅ Approve",
+                    callback_data=f"approve_video_{tutor_id}")],
+                [InlineKeyboardButton(
+                    "🔄 Request Re-upload",
+                    callback_data=f"request_video_reupload_{tutor_id}_{admin_id}"),
+                 InlineKeyboardButton(
+                    "🚫 Reject & Blacklist",
+                    callback_data=f"reject_video_{tutor_id}")],
+            ]))
+
     elif data.startswith("reject_video_"):
         tutor_id = data.replace("reject_video_", "")
         context.user_data["rejecting_video_tutor"] = tutor_id
@@ -381,6 +636,16 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "They will never be able to register again.\n\n"
             "State the reason for rejection:",
             reply_markup=back(f"tut_detail_{tutor_id}"))
+        
+    elif data.startswith("ack_video_reupload_"):
+        parts = data.replace("ack_video_reupload_", "").rsplit("_", 1)
+        tutor_id = parts[0]
+        admin_id = parts[1]
+        context.user_data["video_reupload_admin_id"] = admin_id
+        await reply(update,
+            "📹 *Send Your New Video*\n\n"
+            "Send your new teaching video (30–50 min) directly here as a video or file.\n"
+            "It will replace your previous submission.")
 
     # ── Admin — emergencies / issues ──────────────────────────────────────────
     elif data == "admin_emergencies":
@@ -550,7 +815,10 @@ async def _handle_approve_payment(update, context, transaction_id):
         await send(context.bot, result["student_telegram_id"],
             f"✅ *Payment Confirmed!*\n\n"
             f"Your payment of *{result['amount']:.0f} ETB* for *{result['month']}* "
-            f"has been verified.\n\nYour dashboard is now unlocked. Use /start 🎓")
+            f"has been verified.\n\nYour dashboard is now unlocked.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🎓 Go to Dashboard", callback_data="back")
+        ]]))
 
 
 # ── Text/photo handlers (outside conversations) ───────────────────────────────
@@ -615,7 +883,9 @@ async def handle_text_in_context(update, context):
                 f"✅ *Your issue has been resolved*\n\nTicket: `{emergency_id}`\nResolution: {text}")
 
     elif context.user_data.get("rejecting_docs_tutor"):
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         tutor_id = context.user_data.pop("rejecting_docs_tutor")
+        admin_id = context.user_data.pop("rejecting_docs_admin_id", str(update.effective_user.id))
         from services.registration import RegistrationService
         from ui.keyboards import back
         with next(get_db()) as db:
@@ -627,8 +897,33 @@ async def handle_text_in_context(update, context):
         if result.get("telegram_id"):
             await send(context.bot, result["telegram_id"],
                 f"❌ *Documents Not Approved*\n\n"
+                f"*Reason from reviewer:*\n{text}\n\n"
+                f"Please re-upload the required documents by tapping the button below.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "📤 Re-upload Documents",
+                        callback_data=f"reupload_docs_{tutor_id}_{admin_id}")
+                ]]))
+            
+    elif context.user_data.get("blacklisting_docs_tutor"):
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        tutor_id = context.user_data.pop("blacklisting_docs_tutor")
+        from services.registration import RegistrationService
+        from ui.keyboards import back
+        with next(get_db()) as db:
+            result = RegistrationService(db).reject_tutor_documents(
+                tutor_id, update.effective_user.id, text)
+            from services.tutor_service import TutorService
+            TutorService(db).blacklist_tutor(tutor_id, text)
+        await update.message.reply_text(
+            "🚫 Tutor rejected and permanently blacklisted.",
+            reply_markup=back("tutors_filter_all"))
+        if result.get("telegram_id"):
+            await send(context.bot, result["telegram_id"],
+                f"🚫 *Application Rejected*\n\n"
                 f"Reason: {text}\n\n"
-                f"Please re-upload the required documents in this chat.")
+                f"Unfortunately your application has been permanently rejected. "
+                f"You are not able to re-register on this platform.")
 
     elif context.user_data.get("rejecting_video_tutor"):
         tutor_id = context.user_data.pop("rejecting_video_tutor")
@@ -646,6 +941,29 @@ async def handle_text_in_context(update, context):
                 f"Reason: {text}\n\n"
                 f"Unfortunately your application has been permanently rejected. "
                 f"You are not able to re-register on this platform.")
+            
+    elif context.user_data.get("requesting_video_reupload_tutor"):
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        tutor_id = context.user_data.pop("requesting_video_reupload_tutor")
+        admin_id = context.user_data.pop("requesting_video_reupload_admin_id", str(update.effective_user.id))
+        from repositories.user import UserRepository, TutorRepository
+        with next(get_db()) as db:
+            user = UserRepository(db).get_by_user_id(tutor_id)
+            telegram_id = user.telegram_id if user else None
+        from ui.keyboards import back
+        await update.message.reply_text(
+            "🔄 Tutor notified to re-upload their video.",
+            reply_markup=back(f"tut_detail_{tutor_id}"))
+        if telegram_id:
+            await send(context.bot, telegram_id,
+                f"🔄 *Video Re-upload Required*\n\n"
+                f"*Feedback from reviewer:*\n{text}\n\n"
+                f"Please send a new teaching video (30–50 minutes) directly in this chat.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "📹 I understand, let me re-upload",
+                        callback_data=f"ack_video_reupload_{tutor_id}_{admin_id}")
+                ]]))
 
     elif context.user_data.get("rejecting_payment"):
         transaction_id = context.user_data.pop("rejecting_payment")

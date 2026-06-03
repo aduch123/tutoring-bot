@@ -324,7 +324,7 @@ def payment_confirmed_student(full_name, month, amount) -> str:
         f"✅ *Payment Confirmed!*\n\n"
         f"Hi {full_name.split()[0]}, your payment of *{amount:.0f} ETB* "
         f"for *{month}* has been confirmed.\n\n"
-        f"Your dashboard is now unlocked. Use /start 🎓"
+        f"Your dashboard is now unlocked."
     )
 
 

@@ -75,11 +75,13 @@ async def check_channel_join(update: Update, context: ContextTypes.DEFAULT_TYPE)
         from handlers.dashboards import route_to_dashboard
         await route_to_dashboard(update, context)
     else:
-        await query.edit_message_text(
-            "❌ *Not joined yet.*\n\nPlease join the channel first.",
-            parse_mode="Markdown",
-            reply_markup=channel_join_keyboard())
-
+        try:
+            await query.edit_message_text(
+                "❌ *Not joined yet.*\n\nPlease join the channel first.",
+                parse_mode="Markdown",
+                reply_markup=channel_join_keyboard())
+        except Exception:
+            pass
 
 # ── Reply keyboard router ─────────────────────────────────────────────────────
 
@@ -229,6 +231,29 @@ async def smart_message_handler(update: Update,
         handled = await handle_payment_screenshot(update, context)
         if handled:
             return
+        
+    # 3b. Tutor document re-upload
+    if update.message and (update.message.document or update.message.photo):
+        if context.user_data.get("awaiting_doc_reupload"):
+            file_ids = context.user_data.get("reupload_file_ids", [])
+            if update.message.document:
+                file_ids.append(("document", update.message.document.file_id,
+                                 update.message.document.file_name or "document"))
+            elif update.message.photo:
+                file_ids.append(("photo", update.message.photo[-1].file_id, "ID Photo"))
+            context.user_data["reupload_file_ids"] = file_ids
+            tutor_id = context.user_data.get("reupload_tutor_id", "")
+            admin_id = context.user_data.get("reupload_admin_id", "")
+            from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+            await update.message.reply_text(
+                f"✅ *File {len(file_ids)} received.* Send more or tap Submit.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "✅ Submit Documents",
+                        callback_data=f"reupload_docs_done_{tutor_id}_{admin_id}")
+                ]]))
+            return
 
     # 4. Tutor video upload (pending_video) — must come before file upload response.
     #    Videos sent as files arrive as update.message.document with a video mime type,
@@ -272,29 +297,62 @@ async def smart_message_handler(update: Update,
         if _handled_as_tutor_video and _tvu_file_id:
             from config.config import ADMIN_GROUP_CHAT_ID
             from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-            review_kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Approve",
-                    callback_data=f"approve_video_{_tvu_uid}"),
-                InlineKeyboardButton("❌ Reject & Blacklist",
-                    callback_data=f"reject_video_{_tvu_uid}"),
-            ]])
+            from datetime import datetime
+
+            reupload_admin_id = context.user_data.pop("video_reupload_admin_id", None)
+            admin_target = reupload_admin_id or "0"
+
+            review_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "✅ Approve",
+                    callback_data=f"approve_video_{_tvu_uid}")],
+                [InlineKeyboardButton(
+                    "🔄 Request Re-upload",
+                    callback_data=f"request_video_reupload_{_tvu_uid}_{admin_target}"),
+                 InlineKeyboardButton(
+                    "🚫 Reject & Blacklist",
+                    callback_data=f"reject_video_{_tvu_uid}")],
+            ])
+
             await update.message.reply_text(
                 "✅ *Video received!*\n\n"
                 "An admin will review it and notify you soon.\n\n"
                 "_Sent the wrong video? Just send the correct one — "
                 "it will replace the previous one._",
                 parse_mode="Markdown")
-            if ADMIN_GROUP_CHAT_ID:
+
+            if reupload_admin_id:
                 try:
-                    await context.bot.send_video(
-                        chat_id=ADMIN_GROUP_CHAT_ID, video=_tvu_file_id,
-                        caption=f"📹 *Teaching Video*\n\n"
-                                f"Tutor: *{_tvu_name}*\n"
-                                f"ID: `{_tvu_uid}`",
+                    await context.bot.send_message(
+                        chat_id=int(reupload_admin_id),
+                        text=f"📹 *Re-uploaded Video*\n\n"
+                             f"Tutor *{_tvu_name}* (`{_tvu_uid}`) has submitted a new video.\n\n"
+                             f"Tap below to review it.",
                         parse_mode="Markdown",
-                        reply_markup=review_kb)
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton(
+                                "🎬 Review Video",
+                                callback_data=f"claim_review_video_{_tvu_uid}")
+                        ]]))
                 except Exception as e:
-                    logger.error(f"Failed to send tutor video to admin group: {e}")
+                    logger.error(f"Failed to notify reviewing admin: {e}")
+            elif ADMIN_GROUP_CHAT_ID:
+                try:
+                    await context.bot.send_message(
+                        chat_id=ADMIN_GROUP_CHAT_ID,
+                        text=f"📹 *New Teaching Video Submitted*\n\n"
+                             f"Tutor: *{_tvu_name}*\n"
+                             f"ID: `{_tvu_uid}`\n"
+                             f"Submitted: {datetime.now().strftime('%d %b %Y · %H:%M')}\n\n"
+                             f"Tap below to claim and review this video.",
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton(
+                                "🎬 Claim & Review Video",
+                                callback_data=f"claim_review_video_{_tvu_uid}")
+                        ]]))
+                except Exception as e:
+                    logger.error(f"Failed to notify admin group about video: {e}")
             return
 
     # 5. File upload response (admin messaging)

@@ -40,8 +40,8 @@ PAYMENT_METHODS = ["Telebirr", "CBE Birr", "Commercial Bank of Ethiopia",
     TUT_TERMS, TUT_RULES, TUT_NAME, TUT_PHONE,
     TUT_PRIMARY_SUBJECTS, TUT_SECONDARY_SUBJECTS,
     TUT_MAX_DAYS, TUT_PAYMENT_METHODS, TUT_PAYMENT_ACCOUNTS,
-    TUT_EXPERIENCE, TUT_DOCUMENTS, TUT_CONFIRM,
-) = range(20)
+    TUT_EXPERIENCE, TUT_DOCUMENTS, TUT_CONFIRM, STU_EDIT,
+) = range(21)
 
 
 def _kb(rows): return InlineKeyboardMarkup(rows)
@@ -66,8 +66,9 @@ async def check_channel_membership(bot, telegram_id: int) -> bool:
     try:
         member = await bot.get_chat_member(REQUIRED_CHANNEL, telegram_id)
         return member.status not in ("left", "kicked")
-    except Exception:
-        return True
+    except Exception as e:
+        logger.warning(f"Channel membership check failed for {telegram_id}: {e}")
+        return False
 
 
 def channel_join_keyboard() -> InlineKeyboardMarkup:
@@ -153,6 +154,8 @@ async def stu_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎓 *Student Registration*\n\n`●●○○○○○○`  Step 3 of 8\n\n{'─'*26}\n\n"
         f"Please enter your *phone number*:\n\n💡 _e.g. 0912345678_",
         parse_mode=ParseMode.MARKDOWN, reply_markup=_back_cancel())
+    if context.user_data.get("editing"):
+        return await stu_edit_done(update, context)
     return STU_PHONE
 
 
@@ -169,6 +172,8 @@ async def stu_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Select your *grade or level*:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=grade_picker_keyboard(back_cb="cancel_registration"))
+    if context.user_data.get("editing"):
+        return await stu_edit_done(update, context)
     return STU_GRADE
 
 
@@ -182,6 +187,8 @@ async def stu_grade(update: Update, context: ContextTypes.DEFAULT_TYPE):
         subject_picker_text(grade, [], purpose="learn", step=5, total=8),
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=subject_picker_keyboard(grade, [], done_cb="stu_subjects_done", back_cb="back"))
+    if context.user_data.get("editing"):
+        return STU_SUBJECTS
     return STU_SUBJECTS
 
 
@@ -222,6 +229,8 @@ async def stu_subjects_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("‹ Back", callback_data="back"),
              InlineKeyboardButton("❌ Cancel", callback_data="cancel_registration")],
         ]))
+    if context.user_data.get("editing"):
+        return await stu_edit_done(update, context)
     return STU_DAYS
 
 
@@ -242,6 +251,8 @@ async def stu_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Please enter your *parent/guardian's phone number*:\n\n"
         f"💡 _This field is required_",
         parse_mode=ParseMode.MARKDOWN, reply_markup=_back_cancel())
+    if context.user_data.get("editing"):
+        return await stu_edit_done(update, context)
     return STU_PARENT
 
 
@@ -271,11 +282,116 @@ async def stu_parent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(summary, parse_mode=ParseMode.MARKDOWN,
         reply_markup=_kb([
             [InlineKeyboardButton("✅ Confirm & Register", callback_data="stu_confirm")],
-            [InlineKeyboardButton("✏️ Start Over", callback_data="register_student"),
+            [InlineKeyboardButton("✏️ Edit", callback_data="stu_edit_menu"),
+             InlineKeyboardButton("❌ Cancel", callback_data="cancel_registration")],
+        ]))
+    if context.user_data.get("editing"):
+        return await stu_edit_done(update, context)
+    return STU_CONFIRM
+
+async def stu_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["editing"] = True
+    await query.edit_message_text(
+        "✏️ *Edit Registration*\n\nWhat would you like to change?",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_kb([
+            [InlineKeyboardButton("👤 Name", callback_data="stu_edit_name"),
+             InlineKeyboardButton("📱 Phone", callback_data="stu_edit_phone")],
+            [InlineKeyboardButton("🎓 Grade", callback_data="stu_edit_grade"),
+             InlineKeyboardButton("📚 Subjects", callback_data="stu_edit_subjects")],
+            [InlineKeyboardButton("📅 Days/Week", callback_data="stu_edit_days"),
+             InlineKeyboardButton("👪 Parent Phone", callback_data="stu_edit_parent")],
+            [InlineKeyboardButton("‹ Back to Summary", callback_data="stu_edit_done")],
+        ]))
+    return STU_EDIT
+
+async def stu_edit_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Return to confirmation summary without changing anything."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.pop("editing", None)
+    d = context.user_data
+    grade = d.get("grade", "—")
+    monthly = d.get("monthly_payment", 0)
+    summary = (
+        f"🎓 *Registration Summary*\n\n`●●●●●●●○`  Step 8 of 8\n\n{'─'*26}\n\n"
+        f"👤 Name: *{d.get('full_name')}*\n"
+        f"📱 Phone: {d.get('phone')}\n"
+        f"🎓 Grade: {grade}\n"
+        f"📚 Subjects: {d.get('subjects')}\n"
+        f"📅 Days/week: {d.get('days_per_week')}\n"
+        f"👪 Parent phone: {d.get('parent_phone')}\n"
+        f"💵 Monthly payment: *{monthly:.0f} ETB*\n\n{'─'*26}\n\n"
+        f"Is everything correct?"
+    )
+    await query.edit_message_text(summary, parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_kb([
+            [InlineKeyboardButton("✅ Confirm & Register", callback_data="stu_confirm")],
+            [InlineKeyboardButton("✏️ Edit", callback_data="stu_edit_menu"),
              InlineKeyboardButton("❌ Cancel", callback_data="cancel_registration")],
         ]))
     return STU_CONFIRM
 
+
+async def stu_edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "👤 *Edit Name*\n\nEnter your new full name:",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=_back("stu_edit_menu"))
+    return STU_NAME
+
+
+async def stu_edit_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "📱 *Edit Phone*\n\nEnter your new phone number:",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=_back("stu_edit_menu"))
+    return STU_PHONE
+
+
+async def stu_edit_grade(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "🎓 *Edit Grade*\n\nSelect your grade:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=grade_picker_keyboard())
+    return STU_GRADE
+
+
+async def stu_edit_subjects(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    grade = context.user_data.get("grade", "Other")
+    await query.edit_message_text(
+        subject_picker_text(grade),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=subject_picker_keyboard(grade, context.user_data.get("selected_subjects", [])))
+    return STU_SUBJECTS
+
+
+async def stu_edit_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    from ui.keyboards import days_per_week_keyboard
+    await query.edit_message_text(
+        "📅 *Edit Days/Week*\n\nHow many days per week?",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=days_per_week_keyboard())
+    return STU_DAYS
+
+
+async def stu_edit_parent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "👪 *Edit Parent Phone*\n\nEnter the new parent/guardian phone number:",
+        parse_mode=ParseMode.MARKDOWN, reply_markup=_back("stu_edit_menu"))
+    return STU_PARENT
 
 async def stu_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -651,30 +767,20 @@ async def tut_docs_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from config.config import ADMIN_GROUP_CHAT_ID
     if ADMIN_GROUP_CHAT_ID:
         try:
-            claim_kb = InlineKeyboardMarkup([[
-                InlineKeyboardButton(
-                    "📋 Review Application",
-                    callback_data=f"tut_detail_{result['user_id']}")
-            ]])
-            await bot.send_message(chat_id=ADMIN_GROUP_CHAT_ID,
+            from datetime import datetime
+            await bot.send_message(
+                chat_id=ADMIN_GROUP_CHAT_ID,
                 text=f"👨‍🏫 *New Tutor Application*\n\n"
-                     f"Name: *{result['full_name']}*\nID: `{result['user_id']}`\n"
-                     f"Primary: {', '.join(primary)}\n"
-                     f"Secondary: {', '.join(secondary) or 'None'}\n"
-                     f"Max hours/week: {d.get('max_teaching_hours', 3)}\n\n"
-                     f"Documents below ↓ — Review and tap Claim to approve or reject.",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=claim_kb)
-            for ftype, fid, fname in file_ids:
-                try:
-                    if ftype == "document":
-                        await bot.send_document(chat_id=ADMIN_GROUP_CHAT_ID, document=fid,
-                            caption=f"{fname} — {result['full_name']}")
-                    else:
-                        await bot.send_photo(chat_id=ADMIN_GROUP_CHAT_ID, photo=fid,
-                            caption=f"ID Photo — {result['full_name']}")
-                except Exception:
-                    pass
+                     f"Name: *{result['full_name']}*\n"
+                     f"ID: `{result['user_id']}`\n"
+                     f"Submitted: {datetime.now().strftime('%d %b %Y · %H:%M')}\n\n"
+                     f"Tap below to claim and review this application.",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "📋 Claim & Review",
+                        callback_data=f"claim_review_tut_{result['user_id']}")
+                ]]))
         except Exception as e:
             logger.error(f"Failed to notify admin group: {e}")
     context.user_data.clear()
@@ -709,7 +815,21 @@ def student_conv_handler():
             ],
             STU_DAYS: [CallbackQueryHandler(stu_days, pattern="^stu_days_")],
             STU_PARENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, stu_parent)],
-            STU_CONFIRM: [CallbackQueryHandler(stu_confirm, pattern="^stu_confirm$")],
+            STU_CONFIRM: [
+                CallbackQueryHandler(stu_confirm, pattern="^stu_confirm$"),
+                CallbackQueryHandler(stu_edit_menu, pattern="^stu_edit_menu$"),
+                CallbackQueryHandler(_cancel, pattern="^cancel_registration$"),
+            ],
+            STU_EDIT: [
+                CallbackQueryHandler(stu_edit_name, pattern="^stu_edit_name$"),
+                CallbackQueryHandler(stu_edit_phone, pattern="^stu_edit_phone$"),
+                CallbackQueryHandler(stu_edit_grade, pattern="^stu_edit_grade$"),
+                CallbackQueryHandler(stu_edit_subjects, pattern="^stu_edit_subjects$"),
+                CallbackQueryHandler(stu_edit_days, pattern="^stu_edit_days$"),
+                CallbackQueryHandler(stu_edit_parent, pattern="^stu_edit_parent$"),
+                CallbackQueryHandler(stu_edit_done, pattern="^stu_edit_done$"),
+                CallbackQueryHandler(_cancel, pattern="^cancel_registration$"),
+            ],
             ConversationHandler.TIMEOUT: [
                 MessageHandler(filters.ALL, _timeout_callback),
                 CallbackQueryHandler(_timeout_callback),
