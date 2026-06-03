@@ -892,7 +892,7 @@ async def handle_text_in_context(update, context):
             result = RegistrationService(db).reject_tutor_documents(
                 tutor_id, update.effective_user.id, text)
         await update.message.reply_text(
-            "❌ Documents rejected. Tutor has been notified.",
+            "❌ Documents not approved. Tutor has been notified.",
             reply_markup=back(f"tut_detail_{tutor_id}"))
         if result.get("telegram_id"):
             await send(context.bot, result["telegram_id"],
