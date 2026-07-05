@@ -22,6 +22,6 @@ def get_db():
 
 
 def init_db():
-    from models import user, schedule, payment, emergency  # noqa: F401
+    from models import user, schedule, payment, emergency, messaging  # noqa: F401
     Base.metadata.create_all(bind=engine)
     print("✅ Database initialised")
