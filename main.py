@@ -5,6 +5,7 @@ import socketserver
 import asyncio
 import logging
 import socket
+import time
 
 # ── Force IPv4-only DNS resolution ──────────────────────────────────────────
 # On some networks (e.g. where IPv6 routing is broken or unconfigured), the
@@ -45,6 +46,13 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+# ── Watchdog state ────────────────────────────────────────────────────────────
+# Shared between the health-check HTTP server (its own thread) and the
+# asyncio watchdog job below. Tracks the last time we *confirmed* the bot
+# is actually talking to Telegram, not just that the process is alive.
+_health = {"last_ok": time.time()}
+WATCHDOG_STALE_SECONDS = 5 * 60  # if no confirmed success in 5 min, force-restart
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
@@ -705,6 +713,15 @@ def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     class handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            # Reflect real bot health, not just "this thread is alive".
+            # A stale heartbeat means the polling/scheduler loop has hung
+            # even though this HTTP server (on its own thread) is fine.
+            age = time.time() - _health["last_ok"]
+            if age > WATCHDOG_STALE_SECONDS:
+                self.send_response(503)
+                self.end_headers()
+                self.wfile.write(f"STALE ({int(age)}s since last confirmed heartbeat)".encode())
+                return
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"OK")
@@ -773,6 +790,43 @@ async def main_async():
             except Exception:
                 pass
         scheduler.add_job(_ping, IntervalTrigger(minutes=10))
+    else:
+        logger.warning(
+            "RENDER_EXTERNAL_URL not set — self-ping keep-alive job is DISABLED. "
+            "If deployed on Render, set this env var (or confirm Render sets it "
+            "automatically) or the free service will sleep after 15 min idle."
+        )
+
+    # ── Watchdog: confirm the bot can actually still talk to Telegram ────────
+    # This is separate from the dummy HTTP server above. That server can keep
+    # answering "OK" forever even if the polling loop has silently hung — it
+    # runs on its own thread and knows nothing about the bot's real state.
+    # This job actually calls the Telegram API; if it keeps failing, the bot
+    # is truly dead (not just sleeping) and we force-crash the process so
+    # Render's supervisor restarts the container instead of leaving a
+    # "Live" but non-functional service running indefinitely.
+    _watchdog_failures = {"count": 0}
+    WATCHDOG_MAX_CONSECUTIVE_FAILURES = 3  # ~6 min of failures at 2-min interval
+
+    async def _watchdog():
+        try:
+            await asyncio.wait_for(app.bot.get_me(), timeout=15)
+            _health["last_ok"] = time.time()
+            _watchdog_failures["count"] = 0
+        except Exception as e:
+            _watchdog_failures["count"] += 1
+            logger.error(
+                f"Watchdog: Telegram check failed "
+                f"({_watchdog_failures['count']}/{WATCHDOG_MAX_CONSECUTIVE_FAILURES}): {e}"
+            )
+            if _watchdog_failures["count"] >= WATCHDOG_MAX_CONSECUTIVE_FAILURES:
+                logger.critical(
+                    "Watchdog: bot unresponsive for too long — forcing process "
+                    "exit so the host restarts the container."
+                )
+                os._exit(1)  # hard exit; a normal `return`/exception won't do
+
+    scheduler.add_job(_watchdog, IntervalTrigger(minutes=2))
 
     from services.notification_service import job_generate_sessions
     await job_generate_sessions()
