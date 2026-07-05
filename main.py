@@ -6,6 +6,7 @@ import asyncio
 import logging
 import socket
 import time
+import resource
 
 # ── Force IPv4-only DNS resolution ──────────────────────────────────────────
 # On some networks (e.g. where IPv6 routing is broken or unconfigured), the
@@ -808,7 +809,26 @@ async def main_async():
     _watchdog_failures = {"count": 0}
     WATCHDOG_MAX_CONSECUTIVE_FAILURES = 3  # ~6 min of failures at 2-min interval
 
+    def _current_mem_mb():
+        # /proc/self/status gives real current usage; ru_maxrss only ever
+        # reports the historical peak. Both matter: current tells us "are we
+        # near the 512MB cap right now", peak tells us "did we ever spike".
+        try:
+            with open("/proc/self/status") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1]) / 1024  # kB -> MB
+        except Exception:
+            return None
+
     async def _watchdog():
+        # Log memory on every tick regardless of outcome — Free-tier Render
+        # instances don't expose a memory graph in the dashboard, so this is
+        # the only way to see whether usage is climbing toward the 512MB cap.
+        current_mb = _current_mem_mb()
+        peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        logger.info(f"Watchdog: memory current~{current_mb:.1f}MB peak~{peak_mb:.1f}MB")
+
         try:
             await asyncio.wait_for(app.bot.get_me(), timeout=15)
             _health["last_ok"] = time.time()
