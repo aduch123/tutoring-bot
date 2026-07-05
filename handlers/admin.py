@@ -46,7 +46,7 @@ async def approve_tutor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if result.get("telegram_id"):
         await send(context.bot, result["telegram_id"],
             "🎉 *Your tutor application has been approved!*\n\n"
-            "Welcome to EduConnect. Your dashboard is now active.\n"
+            "Welcome to Akew Tutor. Your dashboard is now active.\n"
             "Use /start to begin."
         )
 

@@ -9,7 +9,6 @@ from utils.error_handler import handle_errors
 
 logger = logging.getLogger(__name__)
 
-
 @handle_errors
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -20,6 +19,14 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with next(get_db()) as db:
         user = UserRepository(db).get_by_telegram_id(update.effective_user.id)
     role = user.role if user else None
+
+    # Gate: lock overdue students from all callbacks except payment-related ones
+    PAYMENT_ALLOWED = ("show_payment_page", "upload_payment_proof", "help", "about",
+                       "check_channel_join")
+    if user and not any(data.startswith(p) for p in PAYMENT_ALLOWED):
+        from handlers.dashboards import check_student_locked
+        if await check_student_locked(update, context, user):
+            return
 
     # ── Navigation ────────────────────────────────────────────────────────────
     if data in ("back", "admin_home"):
@@ -50,13 +57,19 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply(update, payment_page(rate, month, u.full_name if u else "Student"),
                     reply_markup=_locked_menu())
 
-    elif data == "upload_payment_proof":
+    elif data in ["upload_payment_proof", "reupload_payment"]:
+        # Determine if they are re-uploading to customize the greeting slightly (optional UX touch)
+        is_reupload = (data == "reupload_payment")
+        title = "🔄 *Re-upload Payment Screenshot*" if is_reupload else "📸 *Upload Payment Screenshot*"
+
         from ui.keyboards import back
         await reply(update,
-            "📸 *Upload Payment Screenshot*\n\n"
-            "Send a clear screenshot of your payment confirmation.\n\n"
-            "_Make sure the amount is visible._",
+            f"{title}\n\n"
+            "Please send a clear screenshot of your payment confirmation as a *photo* or a *document file*.\n\n"
+            "_Make sure the transaction ID and amount are fully visible._",
             reply_markup=back())
+        
+        # Re-arm the state flag for your smart_message_handler
         context.user_data["awaiting_payment_screenshot"] = True
 
     # ── Student ───────────────────────────────────────────────────────────────
@@ -96,7 +109,6 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await tutor_earnings(update, context)
         
     elif data.startswith("reupload_docs_done_"):
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         import json
         parts = data.replace("reupload_docs_done_", "").rsplit("_", 1)
         tutor_id = parts[0]
@@ -141,7 +153,6 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["reupload_tutor_id"] = tutor_id
         context.user_data["reupload_admin_id"] = admin_id
         context.user_data["reupload_file_ids"] = []
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         await reply(update,
             "📤 *Re-upload Documents*\n\n"
             "Send your files one by one (PDFs or photos).\n"
@@ -233,13 +244,12 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Admin — users ─────────────────────────────────────────────────────────
     elif data == "admin_users":
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton as IKB
         await reply(update, "👥 *User Management*\n\nChoose a category:",
                     reply_markup=InlineKeyboardMarkup([
-                        [IKB("📚 Students", callback_data="students_filter_all"),
-                         IKB("👨‍🏫 Tutors", callback_data="tutors_filter_all")],
-                        [IKB("👑 Admins", callback_data="admins_filter_all")],
-                        [IKB("‹ Back", callback_data="admin_home")],
+                        [InlineKeyboardButton("📚 Students", callback_data="students_filter_all"),
+                         InlineKeyboardButton("👨‍🏫 Tutors", callback_data="tutors_filter_all")],
+                        [InlineKeyboardButton("👑 Admins", callback_data="admins_filter_all")],
+                        [InlineKeyboardButton("‹ Back", callback_data="admin_home")],
                     ]))
 
     elif data.startswith("students_filter_"):
@@ -344,6 +354,35 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers.admin_panel import toggle_active_tutor
         await toggle_active_tutor(update, context, data.replace("toggle_active_tut_", ""))
 
+    elif data.startswith("confirm_unblacklist_tut_"):
+        tutor_id = data.replace("confirm_unblacklist_tut_", "")
+        from ui.keyboards import back
+        from handlers.admin_panel import _kb
+        await reply(update,
+            "⚠️ *Remove from Blacklist?*\n\n"
+            "This tutor will need to go through document review again "
+            "before they're approved.",
+            reply_markup=_kb([
+                [InlineKeyboardButton("♻️ Yes, Remove", callback_data=f"do_unblacklist_tut_{tutor_id}"),
+                 InlineKeyboardButton("❌ Cancel", callback_data=f"tut_detail_{tutor_id}")],
+            ]))
+
+    elif data.startswith("do_unblacklist_tut_"):
+        from handlers.admin_panel import tutor_detail
+        tutor_id = data.replace("do_unblacklist_tut_", "")
+        with next(get_db()) as db:
+            from services.tutor_service import TutorService
+            from repositories.user import UserRepository
+            TutorService(db).unblacklist_tutor(tutor_id)
+            tutor_user = UserRepository(db).get_by_user_id(tutor_id)
+        if tutor_user:
+            await send(context.bot, tutor_user.telegram_id,
+                "♻️ *Account Reinstated*\n\n"
+                "Your account has been reinstated. Your previously submitted "
+                "documents are back under review — you'll be notified once "
+                "they're checked. Use /start to see your status.")
+        await tutor_detail(update, context, tutor_id)
+
     elif data.startswith("confirm_delete_stu_"):
         from handlers.admin_panel import confirm_delete
         await confirm_delete(update, context, "stu", data.replace("confirm_delete_stu_", ""))
@@ -379,10 +418,9 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result.get("telegram_id"):
             await send(context.bot, result["telegram_id"],
                 "🎉 *Your tutor application has been approved!*\n\n"
-                "Welcome to EduConnect. Use /start to access your dashboard.")
+                "Welcome to Akew Tutor. Use /start to access your dashboard.")
             
     elif data.startswith("claim_review_tut_"):
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         from repositories.user import UserRepository, TutorRepository
         import json
         tutor_id = data.replace("claim_review_tut_", "")
@@ -428,7 +466,6 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]]))
         
     elif data.startswith("show_docs_tut_"):
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         from repositories.user import UserRepository, TutorRepository
         import json
         parts = data.replace("show_docs_tut_", "").rsplit("_", 1)
@@ -495,7 +532,6 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Use /start any time to see your current status.")
 
     elif data.startswith("reject_docs_"):
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         parts = data.replace("reject_docs_", "").rsplit("_", 1)
         tutor_id = parts[0]
         admin_id = parts[1] if len(parts) > 1 else str(update.effective_user.id)
@@ -520,7 +556,6 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back(f"tut_detail_{tutor_id}"))
         
     elif data.startswith("request_video_reupload_"):
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         parts = data.replace("request_video_reupload_", "").rsplit("_", 1)
         tutor_id = parts[0]
         admin_id = parts[1] if parts[1] != "0" else str(update.effective_user.id)
@@ -546,11 +581,13 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result.get("telegram_id"):
             await send(context.bot, result["telegram_id"],
                 "🎉 *You are fully approved as a tutor!*\n\n"
-                "Welcome to EduConnect. An admin will assign students to you.\n"
-                "Use /start to access your dashboard.")
+                "Welcome to Akew Tutor. An admin will assign students to you.\n"
+                "Click the button bellow to access your dashboard.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🎓 Go to Dashboard", callback_data="back")
+            ]]))
 
     elif data.startswith("claim_review_video_"):
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         from repositories.user import UserRepository, TutorRepository
         tutor_id = data.replace("claim_review_video_", "")
         with next(get_db()) as db:
@@ -583,8 +620,35 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     callback_data=f"show_video_tut_{tutor_id}_{admin_user.id}")
             ]]))
 
+    elif data.startswith("claim_review_recording_"):
+        from repositories.schedule import SessionRepository
+        session_id = data.replace("claim_review_recording_", "")
+        with next(get_db()) as db:
+            ses = SessionRepository(db).get(session_id)
+            if not ses:
+                await reply(update, "❌ Session not found.")
+                return
+
+        admin_user = update.effective_user
+        try:
+            await query.edit_message_text(
+                f"📹 *New Recording Submitted*\n\n"
+                f"Session: `{session_id}`\n\n"
+                f"🔒 Claimed by {admin_user.full_name or admin_user.first_name}",
+                parse_mode="Markdown")
+        except Exception:
+            pass
+
+        await send(context.bot, admin_user.id,
+            f"🎬 *Recording Review*\n\n"
+            f"Session: `{session_id}`\n\n"
+            f"Tap below to watch the submitted recording.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🎬 Show Recording",
+                    callback_data=f"show_recording_{session_id}_{admin_user.id}")
+            ]]))
+        
     elif data.startswith("show_video_tut_"):
-        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
         from repositories.user import TutorRepository
         parts = data.replace("show_video_tut_", "").rsplit("_", 1)
         tutor_id = parts[0]
@@ -625,6 +689,41 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "🚫 Reject & Blacklist",
                     callback_data=f"reject_video_{tutor_id}")],
             ]))
+
+    elif data.startswith("show_recording_"):
+        from repositories.schedule import SessionRepository
+        parts = data.replace("show_recording_", "").rsplit("_", 1)
+        session_id = parts[0]
+
+        with next(get_db()) as db:
+            ses = SessionRepository(db).get(session_id)
+            recording_file_id = ses.recording_path if ses else None
+
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        if recording_file_id:
+            try:
+                await context.bot.send_video(
+                    chat_id=update.effective_user.id,
+                    video=recording_file_id,
+                    caption=f"📹 Recording — Session `{session_id}`",
+                    parse_mode="Markdown")
+            except Exception:
+                await send(context.bot, update.effective_user.id,
+                    "⚠️ Could not send the recording. It may have expired.")
+        else:
+            await send(context.bot, update.effective_user.id,
+                "⚠️ No recording found for this session.")
+
+        await send(context.bot, update.effective_user.id,
+            "📋 *Review Decision*\n\nRecording sent above. What is your decision?",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Approve", callback_data=f"approve_recording_{session_id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"reject_recording_{session_id}"),
+            ]]))
 
     elif data.startswith("reject_video_"):
         tutor_id = data.replace("reject_video_", "")
@@ -686,6 +785,51 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await reply(update, "❌ Invoice not found.", reply_markup=back("finance_invoices"))
 
+    elif data.startswith("claim_absence_"):
+        session_id = data.replace("claim_absence_", "")
+        with next(get_db()) as db:
+            from repositories.schedule import SessionRepository
+            from repositories.user import UserRepository
+            ses = SessionRepository(db).get(session_id)
+            if not ses:
+                await query.answer("Session not found.", show_alert=True)
+                return
+            tutor = UserRepository(db).get_by_user_id(ses.tutor_id)
+            student = UserRepository(db).get_by_user_id(ses.student_id)
+            session_subject = ses.subject
+            session_time = ses.scheduled_start.strftime('%H:%M')
+            tutor_name = tutor.full_name if tutor else ses.tutor_id
+            student_name = student.full_name if student else ses.student_id
+    
+        admin_user = update.effective_user
+        # Edit group message to remove the button and show who claimed it
+        try:
+            await query.edit_message_text(
+                f"🚨 *Tutor Absent*\n\n"
+                f"Session: `{session_id}`\n"
+                f"Subject: {session_subject}\n"
+                f"Tutor: {tutor_name}\n"
+                f"Student: {student_name}\n"
+                f"Time: {session_time}\n\n"
+                f"🔒 Claimed by {admin_user.full_name or admin_user.first_name}",
+                parse_mode="Markdown")
+        except Exception:
+            pass
+        
+        # DM the claiming admin with the assign replacement button
+        await send(context.bot, admin_user.id,
+            f"🚨 *Handle Tutor Absence*\n\n"
+            f"Session: `{session_id}`\n"
+            f"Subject: {session_subject}\n"
+            f"Tutor: {tutor_name}\n"
+            f"Student: {student_name}\n"
+            f"Time: {session_time}\n\n"
+            f"Assign a replacement tutor:",
+            reply_markup=_kb([[InlineKeyboardButton(
+                "🔄 Assign Replacement Tutor",
+                callback_data=f"assign_replacement_{session_id}")]]))
+        await query.answer("Claimed! Check your DM.")
+
     # ── Emergency resolve ─────────────────────────────────────────────────────
     elif data.startswith("resolve_emg_"):
         context.user_data["resolving_emergency"] = data.replace("resolve_emg_", "")
@@ -726,7 +870,6 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply(update, "⚠️ Unknown action. Use /start to return to your dashboard.",
                     reply_markup=back())
 
-
 # ── Claim handlers ────────────────────────────────────────────────────────────
 
 async def _handle_claim_payment(update, context, transaction_id):
@@ -749,10 +892,24 @@ async def _handle_claim_payment(update, context, transaction_id):
     ])
     try:
         if result.get("screenshot_file_id"):
-            await context.bot.send_photo(
-                chat_id=update.effective_user.id,
-                photo=result["screenshot_file_id"],
-                caption=f"Payment proof — {result['student_name']}")
+            file_id = result["screenshot_file_id"]
+            caption_text = f"Payment proof — {result['student_name']}"
+            
+            try:
+                # 1. Try sending as a photo first (most common case)
+                await context.bot.send_photo(
+                    chat_id=update.effective_user.id,
+                    photo=file_id,
+                    caption=caption_text
+                )
+            except Exception:
+                # 2. If it fails (it's an uncompressed document/PDF), send as a document
+                await context.bot.send_document(
+                    chat_id=update.effective_user.id,
+                    document=file_id,
+                    caption=caption_text
+                )
+
         await send(context.bot, update.effective_user.id,
             f"💳 *Payment Review*\n\n"
             f"Student: *{result['student_name']}* (`{result['student_id']}`)\n"
@@ -761,12 +918,13 @@ async def _handle_claim_payment(update, context, transaction_id):
             f"TXN: `{result['transaction_id']}`\n\n"
             f"Confirm or reject:",
             reply_markup=keyboard)
+            
         await update.callback_query.answer("Claimed! Check your DM.")
+        
     except Exception as e:
         logger.error(f"Failed to DM admin: {e}")
         await update.callback_query.answer(
             "Couldn't send DM. Start the bot privately first.", show_alert=True)
-
 
 async def _handle_claim_emergency(update, context, emergency_id):
     from services.emergency_service import EmergencyService
@@ -795,7 +953,6 @@ async def _handle_claim_emergency(update, context, emergency_id):
         await update.callback_query.answer(
             "Couldn't send DM. Start the bot privately first.", show_alert=True)
 
-
 async def _handle_approve_payment(update, context, transaction_id):
     from services.payment_service import PaymentService
     with next(get_db()) as db:
@@ -820,49 +977,78 @@ async def _handle_approve_payment(update, context, transaction_id):
                 InlineKeyboardButton("🎓 Go to Dashboard", callback_data="back")
         ]]))
 
-
 # ── Text/photo handlers (outside conversations) ───────────────────────────────
 
 async def handle_payment_screenshot(update, context) -> bool:
     if not context.user_data.get("awaiting_payment_screenshot"):
         return False
+        
+    # Check both potential payload fields
     photo = update.message.photo
-    if not photo:
-        await update.message.reply_text("⚠️ Please send a *photo* screenshot.",
+    doc = update.message.document
+    
+    if not photo and not doc:
+        await update.message.reply_text("⚠️ Please send a screenshot as a *photo* or a *document file*.",
                                          parse_mode="Markdown")
         return True
-    file_id = photo[-1].file_id
+
+    # Safely extract the file_id regardless of input type
+    if doc:
+        file_id = doc.file_id
+        is_document = True
+    else:
+        file_id = photo[-1].file_id
+        is_document = False
+
     context.user_data.pop("awaiting_payment_screenshot", None)
     from services.payment_service import PaymentService
     from config.config import ADMIN_GROUP_CHAT_ID
     from ui.keyboards import claim_payment_button
+    
     with next(get_db()) as db:
         result = PaymentService(db).submit_payment_screenshot(
             update.effective_user.id, file_id)
+            
     if not result["success"]:
         await update.message.reply_text(f"❌ {result['message']}")
         return True
+        
     from ui.keyboards import back
     await update.message.reply_text(
         "✅ *Screenshot Received!*\n\n"
         "An admin will verify it shortly. You'll be notified once confirmed. 🙏",
         parse_mode="Markdown", reply_markup=back())
+        
     if ADMIN_GROUP_CHAT_ID:
+        is_reupload = result.get("is_reupload", False)
+        claimer_id = result.get("claimed_by_telegram_id")
+        prefix = "🔄 *Re-uploaded Screenshot*" if is_reupload else "💳 *New Payment Screenshot*"
+        caption_text = (
+            f"{prefix}\n\n"
+            f"Student: *{result['student_name']}* (`{result['student_id']}`)\n"
+            f"Month: {result['month']}\n"
+            f"Amount: {result['amount']:.0f} ETB\n"
+            f"TXN: `{result['transaction_id']}`"
+        )
+        if is_reupload and claimer_id:
+            caption_text += "\n\n_Student re-uploaded. Previous claim maintained._"
+            destination = claimer_id
+        else:
+            destination = ADMIN_GROUP_CHAT_ID
         try:
-            await context.bot.send_photo(
-                chat_id=ADMIN_GROUP_CHAT_ID, photo=file_id,
-                caption=(
-                    f"💳 *New Payment Screenshot*\n\n"
-                    f"Student: *{result['student_name']}* (`{result['student_id']}`)\n"
-                    f"Month: {result['month']}\n"
-                    f"Amount: {result['amount']:.0f} ETB\n"
-                    f"TXN: `{result['transaction_id']}`"),
-                parse_mode="Markdown",
-                reply_markup=claim_payment_button(result["transaction_id"]))
+            if is_document:
+                await context.bot.send_document(
+                    chat_id=destination, document=file_id,
+                    caption=caption_text, parse_mode="Markdown",
+                    reply_markup=claim_payment_button(result["transaction_id"]))
+            else:
+                await context.bot.send_photo(
+                    chat_id=destination, photo=file_id,
+                    caption=caption_text, parse_mode="Markdown",
+                    reply_markup=claim_payment_button(result["transaction_id"]))
         except Exception as e:
-            logger.error(f"Failed to send to admin group: {e}")
+            logger.error(f"Failed to send payment screenshot notification: {e}")
     return True
-
 
 async def handle_text_in_context(update, context):
     text = update.message.text.strip()
@@ -965,6 +1151,22 @@ async def handle_text_in_context(update, context):
                         callback_data=f"ack_video_reupload_{tutor_id}_{admin_id}")
                 ]]))
 
+    elif context.user_data.get("rejecting_recording"):
+        session_id = context.user_data.pop("rejecting_recording")
+        from services.recording_service import RecordingService
+        from ui.keyboards import back
+        with next(get_db()) as db:
+            result = RecordingService(db).reject(session_id, text)
+        await update.message.reply_text(
+            f"❌ Recording rejected for session `{session_id}`. Tutor has been notified.",
+            parse_mode="Markdown", reply_markup=back())
+        if result.get("tutor_telegram_id"):
+            await send(context.bot, result["tutor_telegram_id"],
+                f"❌ *Recording Rejected*\n\n"
+                f"Session: `{session_id}`\n"
+                f"Reason: {text}\n\n"
+                f"Please upload a new recording via the 📹 Recording button.")
+
     elif context.user_data.get("rejecting_payment"):
         transaction_id = context.user_data.pop("rejecting_payment")
         from services.payment_service import PaymentService
@@ -976,11 +1178,19 @@ async def handle_text_in_context(update, context):
             "❌ Payment rejected. Student has been notified.",
             reply_markup=back("finance_invoices"))
         if result.get("student_telegram_id"):
+            # 1. Create the inline keyboard button mapping to your callback string
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+            rejection_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Re-upload Screenshot", callback_data="reupload_payment")]
+            ])
+
             await send(context.bot, result["student_telegram_id"],
                 f"❌ *Payment Not Confirmed*\n\nReason: {text}\n\n"
-                f"Please re-upload a clear screenshot or contact an admin.")
-
-
+                f"Please click the button below to re-upload a clear screenshot or contact an admin.",
+                reply_markup=rejection_markup
+            )
+    
 # ── Help ──────────────────────────────────────────────────────────────────────
 
 async def _show_help(update, context, role):
@@ -1029,7 +1239,6 @@ async def _show_help(update, context, role):
         )
     await reply(update, text, reply_markup=back())
 
-
 async def _myid(update, user):
     from ui.keyboards import back
     if user:
@@ -1040,7 +1249,6 @@ async def _myid(update, user):
         await reply(update,
             f"📱 Telegram ID: `{update.effective_user.id}`",
             reply_markup=back())
-
 
 def _locked_menu():
     from ui.keyboards import student_locked_menu

@@ -23,41 +23,27 @@ def grade_picker_keyboard(back_cb: str = "back") -> InlineKeyboardMarkup:
 
 
 def subject_picker_keyboard(grade: str, selected: list,
-                             group: str = "both",
                              done_cb: str = "subjects_done",
                              back_cb: str = "back") -> InlineKeyboardMarkup:
     """
     Show subjects for a grade as toggle buttons.
     selected: list of already-selected subject names
-    group: "Natural" | "Social" | "both"
     """
     from data.subjects import get_subjects_for_grade
-    groups = get_subjects_for_grade(grade)
+    subjects = get_subjects_for_grade(grade)
     rows = []
-
-    def add_group(label: str, subjects: list):
-        if subjects:
-            rows.append([InlineKeyboardButton(
-                f"── {label} Sciences ──", callback_data="noop")])
+    row = []
+    for subj in subjects:
+        is_selected = subj in selected
+        prefix = "✅ " if is_selected else ""
+        row.append(InlineKeyboardButton(
+            f"{prefix}{subj}",
+            callback_data=f"subj_toggle_{subj.replace(' ', '_')}"))
+        if len(row) == 2:
+            rows.append(row)
             row = []
-            for subj in subjects:
-                is_selected = subj in selected
-                prefix = "✅ " if is_selected else ""
-                row.append(InlineKeyboardButton(
-                    f"{prefix}{subj}",
-                    callback_data=f"subj_toggle_{subj.replace(' ', '_')}"))
-                if len(row) == 2:
-                    rows.append(row)
-                    row = []
-            if row:
-                rows.append(row)
-
-    if group in ("Natural", "both"):
-        add_group("Natural", groups.get("Natural", []))
-    if group in ("Social", "both"):
-        add_group("Social", groups.get("Social", []))
-
-    # Done button shows count
+    if row:
+        rows.append(row)
     count = len(selected)
     done_label = f"✅ Done ({count} selected)" if count > 0 else "✅ Done"
     rows.append([InlineKeyboardButton(done_label, callback_data=done_cb)])

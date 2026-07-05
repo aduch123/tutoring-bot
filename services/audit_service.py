@@ -142,6 +142,7 @@ class AuditService:
                 "user_id": u.user_id, "full_name": u.full_name,
                 "phone": u.phone, "is_active": u.is_active,
                 "is_verified": u.is_verified,
+                "is_blacklisted": tut.is_blacklisted if tut else False,
                 "subjects": (tut.primary_subjects or "") if tut else "—",
             }
             if filter_type == "all":
@@ -149,6 +150,8 @@ class AuditService:
             elif filter_type == "pending" and not u.is_verified:
                 result.append(row)
             elif filter_type == "suspended" and not u.is_active:
+                result.append(row)
+            elif filter_type == "blacklisted" and row["is_blacklisted"]:
                 result.append(row)
         return result
 

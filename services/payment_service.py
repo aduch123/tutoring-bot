@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from decimal import Decimal
 from sqlalchemy.orm import Session
 from repositories.user import UserRepository, StudentRepository
@@ -6,7 +6,7 @@ from repositories.payment import PaymentRepository, PayoutRepository
 from repositories.schedule import SessionRepository
 from services.id_generator import IDGenerator
 from services.admin_service import AdminService
-from config.config import PLATFORM_COMMISSION, DEFAULT_SESSION_RATE_ETB
+from config.config import PLATFORM_COMMISSION_ETB, TUTOR_NET_RATE_ETB, DEFAULT_SESSION_RATE_ETB
 
 
 class PaymentService:
@@ -32,12 +32,6 @@ class PaymentService:
         payment = self.payments.get_by_student_month(student_id, current_month)
 
         if not payment:
-            # Check if there's any prior completed payment
-            all_payments = self.payments.get_by_student(student_id)
-            completed = [p for p in all_payments if p.status == "completed"]
-            if completed:
-                # Has paid before — current month not yet invoiced
-                return {"status": "paid", "payment": None}
             return {"status": "unpaid", "payment": None}
 
         if payment.status == "completed":
@@ -50,6 +44,28 @@ class PaymentService:
         """True if student has at least one confirmed payment."""
         all_payments = self.payments.get_by_student(student_id)
         return any(p.status == "completed" for p in all_payments)
+    
+    def is_student_unlocked_this_month(self, student_id: str) -> bool:
+        """
+        True if the student has a confirmed payment for the current calendar month
+        OR if their rolling subscription deadline is still active in the future.
+        """
+        from models.user import Student
+        from datetime import datetime
+
+        # 1. Primary Gate: If their rolling deadline is in the future, they are explicitly unlocked
+        student = self.db.query(Student).filter(Student.user_id == student_id).first()
+        if student and student.next_payment_due and student.next_payment_due > datetime.now():
+            return True
+
+        # 2. Calendar Month Gate: If overdue, check if an approved payment exists for this month
+        current_month = datetime.now().date().replace(day=1)
+        current_payment = self.payments.get_by_student_month(student_id, current_month)
+
+        if current_payment and current_payment.status == "completed":
+            return True
+
+        return False
 
     # ── Screenshot upload ─────────────────────────────────────────────────────
 
@@ -80,6 +96,9 @@ class PaymentService:
         if payment.status == "completed":
             return {"success": False, "message": "Your payment for this month is already confirmed."}
 
+        was_already_uploaded = payment.status == "screenshot_uploaded"
+        existing_claimer = payment.claimed_by_telegram_id
+
         payment.screenshot_file_id = file_id
         payment.screenshot_uploaded_at = now
         payment.status = "screenshot_uploaded"
@@ -87,6 +106,8 @@ class PaymentService:
 
         return {
             "success": True,
+            "is_reupload": was_already_uploaded,
+            "claimed_by_telegram_id": existing_claimer,
             "transaction_id": payment.transaction_id,
             "student_name": user.full_name,
             "student_id": user.user_id,
@@ -146,6 +167,10 @@ class PaymentService:
 
         payment.status = "completed"
         payment.paid_at = datetime.now()
+        # Push the rolling deadline forward by 30 days from today
+        student_record = self.students.get(payment.student_id)
+        if student_record:
+            student_record.next_payment_due = datetime.now() + timedelta(days=30)
         self.db.commit()
 
         student = self.users.get_by_user_id(payment.student_id)
@@ -266,8 +291,8 @@ class PaymentService:
                 continue
             rate = DEFAULT_SESSION_RATE_ETB
             total = Decimal(str(count * rate))
-            commission = total * Decimal(str(PLATFORM_COMMISSION))
-            net = total - commission
+            commission = Decimal(str(PLATFORM_COMMISSION_ETB)) * count
+            net = Decimal(str(TUTOR_NET_RATE_ETB)) * count
             self.payouts.create({
                 "tutor_id": tutor.user_id, "month": month,
                 "sessions_completed": count, "total_amount": total,

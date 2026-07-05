@@ -1,5 +1,5 @@
 """All message templates."""
-from config.config import DEFAULT_SESSION_RATE_ETB, PLATFORM_COMMISSION
+from config.config import DEFAULT_SESSION_RATE_ETB, PLATFORM_COMMISSION_ETB, TUTOR_NET_RATE_ETB
 
 DIVIDER = "─" * 26
 
@@ -11,17 +11,15 @@ def _sec(title): return f"\n{DIVIDER}\n*{title}*\n{DIVIDER}"
 def welcome_unregistered(first_name: str) -> str:
     return (
         f"👋 Hello, *{first_name}!*\n\n"
-        f"Welcome to *EduConnect* — your online tutoring platform.\n\n"
+        f"Welcome to *Akew Tutor* — your online tutoring platform.\n\n"
         f"{_sec('Get Started')}\n\n"
         f"Are you a *Student* looking to learn,\nor a *Tutor* ready to teach?\n\n"
         f"👇 Choose your role below:"
     )
 
-
 def about_message() -> str:
-    net = DEFAULT_SESSION_RATE_ETB * (1 - PLATFORM_COMMISSION)
     return (
-        f"ℹ️ *About EduConnect*\n\n"
+        f"ℹ️ *About Akew Tutor*\n\n"
         f"Connecting students with qualified tutors across Ethiopia.\n"
         f"{_sec('What We Offer')}\n\n"
         f"  🎓  One-on-one tutoring via Zoom\n"
@@ -31,10 +29,9 @@ def about_message() -> str:
         f"  💰  Transparent payments\n"
         f"  🚨  24/7 admin support\n"
         f"{_sec('Rates')}\n\n"
-        f"  💵  Student rate: from *{DEFAULT_SESSION_RATE_ETB:.0f} ETB/hr*\n"
-        f"  💸  Tutor earns: *{net:.0f} ETB/hr* after {int(PLATFORM_COMMISSION*100)}% fee"
+        f"  💵  Student rate: *{DEFAULT_SESSION_RATE_ETB:.0f} ETB/hr*\n"
+        f"  💸  Tutor earns: *{TUTOR_NET_RATE_ETB:.0f} ETB/hr* (platform fee: {PLATFORM_COMMISSION_ETB:.0f} ETB/session)"
     )
-
 
 # ── Student ───────────────────────────────────────────────────────────────────
 
@@ -66,7 +63,6 @@ def student_dashboard(full_name, user_id, upcoming, payment_status,
     lines.append(f"\n{DIVIDER}")
     return "\n".join(lines)
 
-
 def student_sessions(upcoming, past) -> str:
     lines = [f"📅 *Your Sessions*\n"]
     if upcoming:
@@ -90,7 +86,6 @@ def student_sessions(upcoming, past) -> str:
             )
     return "\n".join(lines)
 
-
 def student_schedule(schedules) -> str:
     lines = [f"📆 *Your Weekly Schedule*\n"]
     if not schedules:
@@ -106,7 +101,6 @@ def student_schedule(schedules) -> str:
         )
     return "\n".join(lines)
 
-
 def student_payments(rate, payments) -> str:
     lines = [f"💳 *Your Payments*\n", f"💵 Rate: *{rate:.0f} ETB / hr*\n"]
     if not payments:
@@ -119,7 +113,6 @@ def student_payments(rate, payments) -> str:
             f"    `{p['transaction_id']}`\n"
         )
     return "\n".join(lines)
-
 
 # ── Tutor ─────────────────────────────────────────────────────────────────────
 
@@ -135,7 +128,6 @@ def tutor_dashboard(full_name, user_id, upcoming_count,
         f"💰  Total earned: *{total_earned:.0f} ETB*",
         f"\n{DIVIDER}",
     ])
-
 
 def tutor_sessions(upcoming, past) -> str:
     lines = [f"📅 *Your Sessions*\n"]
@@ -161,7 +153,6 @@ def tutor_sessions(upcoming, past) -> str:
             )
     return "\n".join(lines)
 
-
 def tutor_earnings(total_earned, payouts) -> str:
     lines = [f"💰 *Your Earnings*\n", f"💵 *Total paid out: {total_earned:.0f} ETB*\n", _sec("History")]
     if not payouts:
@@ -174,7 +165,6 @@ def tutor_earnings(total_earned, payouts) -> str:
             f"    Sessions: {p['sessions']}  ·  Net: *{p['net']:.0f} ETB*  ·  _{p['status']}_"
         )
     return "\n".join(lines)
-
 
 def tutor_schedule(schedules) -> str:
     lines = [f"📆 *Your Teaching Schedule*\n"]
@@ -190,7 +180,6 @@ def tutor_schedule(schedules) -> str:
             f"    🆔 `{s['schedule_id']}`"
         )
     return "\n".join(lines)
-
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
@@ -225,7 +214,6 @@ def admin_dashboard(full_name, user_id, stats) -> str:
     lines.append(f"\n{DIVIDER}")
     return "\n".join(lines)
 
-
 def admin_emergencies(items) -> str:
     if not items:
         return "✅ *No open emergencies.*\n\nAll clear!"
@@ -241,7 +229,6 @@ def admin_emergencies(items) -> str:
         )
     return "\n".join(lines)
 
-
 def admin_issues(items) -> str:
     if not items:
         return "✅ *No open issues.*\n\nAll clear!"
@@ -255,7 +242,6 @@ def admin_issues(items) -> str:
             + (f"\n    🔒 Claimed by: {e['claimed_by']}" if e.get("claimed_by") else "")
         )
     return "\n".join(lines)
-
 
 def admin_user_audit(data) -> str:
     u = data["user"]
@@ -279,7 +265,6 @@ def admin_user_audit(data) -> str:
             lines.append(f"\n  • `{e['emergency_id']}` {e['issue_type']} — _{e['status']}_")
     return "\n".join(lines)
 
-
 # ── Registration ──────────────────────────────────────────────────────────────
 
 def reg_step(role, step, total, prompt, tip=None) -> str:
@@ -295,16 +280,14 @@ def reg_step(role, step, total, prompt, tip=None) -> str:
         lines.append(f"\n💡 _{tip}_")
     return "\n".join(lines)
 
-
 def reg_complete_student(full_name, user_id) -> str:
     return (
         f"🎉 *Registration Complete!*\n\n"
-        f"Welcome to EduConnect, *{full_name.split()[0]}*!\n"
+        f"Welcome to Akew Tutor, *{full_name.split()[0]}*!\n"
         f"{_sec('Your Account')}\n\n"
         f"🆔  Student ID: `{user_id}`\n\n"
         f"Please complete your first payment to unlock your dashboard."
     )
-
 
 def reg_complete_tutor(full_name, user_id) -> str:
     return (
@@ -316,7 +299,6 @@ def reg_complete_tutor(full_name, user_id) -> str:
         f"You'll be notified once approved."
     )
 
-
 # ── Notifications ─────────────────────────────────────────────────────────────
 
 def payment_confirmed_student(full_name, month, amount) -> str:
@@ -326,7 +308,6 @@ def payment_confirmed_student(full_name, month, amount) -> str:
         f"for *{month}* has been confirmed.\n\n"
         f"Your dashboard is now unlocked."
     )
-
 
 def payout_paid_tutor(full_name, month, net) -> str:
     return (

@@ -177,7 +177,7 @@ def confirm_session_inline(session_id: str):
 
 # ── Tutor hours per week ──────────────────────────────────────────────────────
 
-def tutor_hours_per_week_keyboard():
+def tutor_hours_per_week_keyboard(back_cb: str = "back"):
     """Hour options for tutor weekly capacity."""
     hours = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     rows = []
@@ -189,7 +189,7 @@ def tutor_hours_per_week_keyboard():
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton("‹ Back", callback_data="back"),
+    rows.append([InlineKeyboardButton("‹ Back", callback_data=back_cb),
                  InlineKeyboardButton("✕ Cancel", callback_data="cancel_registration")])
     return kb(rows)
 

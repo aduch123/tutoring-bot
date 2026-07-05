@@ -4,6 +4,24 @@ import http.server
 import socketserver
 import asyncio
 import logging
+import socket
+
+# ── Force IPv4-only DNS resolution ──────────────────────────────────────────
+# On some networks (e.g. where IPv6 routing is broken or unconfigured), the
+# IPv6 address returned by DNS fails instantly with "Network is unreachable",
+# and httpx/httpcore occasionally retries that broken IPv6 route before
+# falling back to IPv4, causing intermittent ConnectError crashes during
+# Telegram polling. Patching socket.getaddrinfo to strip IPv6 results forces
+# every network library (httpx included) to only ever attempt IPv4.
+_original_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    return _original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+
+socket.getaddrinfo = _ipv4_only_getaddrinfo
+
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -13,7 +31,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from config.config import BOT_TOKEN
-from config.db import init_db
+from config.db import get_db, init_db
 import os
 os.makedirs("logs", exist_ok=True)
 
@@ -38,12 +56,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not joined:
         await reply(update,
             "📢 *Join Our Channel First*\n\n"
-            "You must join our official channel to use EduConnect.",
+            "You must join our official channel to use Akew Tutor.",
             reply_markup=channel_join_keyboard())
         return
     from handlers.dashboards import route_to_dashboard
     await route_to_dashboard(update, context)
-
 
 # ── /myid ─────────────────────────────────────────────────────────────────────
 
@@ -62,7 +79,6 @@ async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"Your Telegram ID: `{tid}`\n_Not registered yet._",
             parse_mode="Markdown")
-
 
 # ── Channel join check ────────────────────────────────────────────────────────
 
@@ -89,13 +105,47 @@ async def handle_reply_keyboard(update: Update,
                                  context: ContextTypes.DEFAULT_TYPE) -> bool:
     text = update.message.text
 
-    async def _sessions_student(u, c):
-        from handlers.student import student_sessions
-        await student_sessions(u, c)
+    # Allow these buttons even when locked
+    ALWAYS_ALLOWED = ("💳 Payments", "❓ Help", "📝 Report", "🚨 Emergency")
+    if text not in ALWAYS_ALLOWED:
+        from repositories.user import UserRepository
+        from handlers.dashboards import check_student_locked
+        with next(get_db()) as db:
+            _user = UserRepository(db).get_by_telegram_id(update.effective_user.id)
+        if _user and await check_student_locked(update, context, _user):
+            return True
+        
+    # async def _sessions_student(u, c):
+    #     from handlers.student import student_sessions
+    #     await student_sessions(u, c)
 
-    async def _schedule_student(u, c):
-        from handlers.student import student_schedule
-        await student_schedule(u, c)
+    # async def _schedule_student(u, c):
+    #     from handlers.student import student_schedule
+    #     await student_schedule(u, c)
+
+    async def _sessions(u, c):
+        from config.db import get_db
+        from repositories.user import UserRepository
+        with next(get_db()) as db:
+            usr = UserRepository(db).get_by_telegram_id(u.effective_user.id)
+        if usr and usr.role == "tutor":
+            from handlers.tutor import tutor_sessions
+            await tutor_sessions(u, c)
+        else:
+            from handlers.student import student_sessions
+            await student_sessions(u, c)
+
+    async def _schedule(u, c):
+        from config.db import get_db
+        from repositories.user import UserRepository
+        with next(get_db()) as db:
+            usr = UserRepository(db).get_by_telegram_id(u.effective_user.id)
+        if usr and usr.role == "tutor":
+            from handlers.tutor import tutor_schedule
+            await tutor_schedule(u, c)
+        else:
+            from handlers.student import student_schedule
+            await student_schedule(u, c)
 
     async def _payments(u, c):
         from handlers.student import student_payments
@@ -117,13 +167,13 @@ async def handle_reply_keyboard(update: Update,
         from handlers.tutor import tutor_earnings
         await tutor_earnings(u, c)
 
-    async def _sessions_tutor(u, c):
-        from handlers.tutor import tutor_sessions
-        await tutor_sessions(u, c)
+    # async def _sessions_tutor(u, c):
+    #     from handlers.tutor import tutor_sessions
+    #     await tutor_sessions(u, c)
 
-    async def _schedule_tutor(u, c):
-        from handlers.tutor import tutor_schedule
-        await tutor_schedule(u, c)
+    # async def _schedule_tutor(u, c):
+    #     from handlers.tutor import tutor_schedule
+    #     await tutor_schedule(u, c)
 
     async def _recording(u, c):
         from handlers.tutor import upload_start
@@ -134,12 +184,22 @@ async def handle_reply_keyboard(update: Update,
         await confirm_start(u, c)
 
     async def _report(u, c):
-        from handlers.student import report_start
-        await report_start(u, c)
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        await u.message.reply_text(
+            "📝 *Report an Issue*\n\nTap below to start:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📝 Start Report", callback_data="report_issue")
+            ]]))
 
     async def _emergency(u, c):
-        from handlers.student import emergency_start
-        await emergency_start(u, c)
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        await u.message.reply_text(
+            "🚨 *Emergency*\n\nTap below to report:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🚨 Report Emergency", callback_data="emergency")
+            ]]))
 
     async def _help(u, c):
         from handlers.callbacks import _show_help
@@ -178,9 +238,12 @@ async def handle_reply_keyboard(update: Update,
         await show_issues(u, c)
 
     routes = {
+        # Shared (role-aware)
+        "📅 Sessions": _sessions,
+        "📆 Schedule": _schedule,
         # Student
-        "📅 Sessions": _sessions_student,
-        "📆 Schedule": _schedule_student,
+        # "📅 Sessions": _sessions_student,
+        # "📆 Schedule": _schedule_student,
         "💳 Payments": _payments,
         "👤 Profile": _profile,
         "📝 Report": _report,
@@ -207,7 +270,6 @@ async def handle_reply_keyboard(update: Update,
     await handler(update, context)
     return True
 
-
 # ── Smart message handler ─────────────────────────────────────────────────────
 
 async def smart_message_handler(update: Update,
@@ -226,7 +288,7 @@ async def smart_message_handler(update: Update,
             return
 
     # 3. Payment screenshot
-    if update.message and update.message.photo:
+    if update.message and (update.message.photo or update.message.document):
         from handlers.callbacks import handle_payment_screenshot
         handled = await handle_payment_screenshot(update, context)
         if handled:
@@ -354,12 +416,96 @@ async def smart_message_handler(update: Update,
                 except Exception as e:
                     logger.error(f"Failed to notify admin group about video: {e}")
             return
+        
+    # 4b. Recording upload (post-approval session recording)
+    if update.message and (update.message.video or update.message.document):
+        if context.user_data.get("upload_session_id"):
+            from handlers.tutor import receive_video
+            await receive_video(update, context)
+            return
 
     # 5. File upload response (admin messaging)
     if update.message and (update.message.photo or update.message.document):
         from handlers.messaging import handle_file_upload_response
         handled = await handle_file_upload_response(update, context)
         if handled:
+            return
+        
+    # 5b. Admin messaging — text reply
+    if update.message and update.message.text:
+        from services.messaging_service import MessagingService
+        from repositories.user import UserRepository
+        from config.db import get_db as _get_db
+        pending = None
+        admin_telegram_id = None
+        user_name = None
+        with next(_get_db()) as db:
+            _msg_user = UserRepository(db).get_by_telegram_id(update.effective_user.id)
+            if _msg_user:
+                svc = MessagingService(db)
+                pending = svc.get_pending_response(_msg_user.user_id, response_type="text")
+                if pending:
+                    svc.record_response(pending.message_id, update.message.text)
+                    admin = UserRepository(db).get_by_user_id(pending.from_admin_id)
+                    admin_telegram_id = admin.telegram_id if admin else None
+                    user_name = _msg_user.full_name
+        if pending and admin_telegram_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_telegram_id,
+                    text=f"📨 *Message Response*\n\n"
+                         f"From: *{user_name}*\n\n"
+                         f"Response:\n{update.message.text}",
+                    parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"Failed to notify admin of text response: {e}")
+            await update.message.reply_text("✅ Your response has been sent to the admin.")
+            return
+
+    # 5c. Admin messaging — file upload reply
+    if update.message and (update.message.photo or update.message.document):
+        from services.messaging_service import MessagingService
+        from repositories.user import UserRepository
+        from config.db import get_db as _get_db
+        pending = None
+        admin_telegram_id = None
+        user_name = None
+        file_id = None
+        is_doc = False
+        with next(_get_db()) as db:
+            _msg_user = UserRepository(db).get_by_telegram_id(update.effective_user.id)
+            if _msg_user:
+                svc = MessagingService(db)
+                pending = svc.get_pending_response(_msg_user.user_id, response_type="file_upload")
+                if pending:
+                    if update.message.document:
+                        file_id = update.message.document.file_id
+                        is_doc = True
+                    elif update.message.photo:
+                        file_id = update.message.photo[-1].file_id
+                    if file_id:
+                        svc.record_response(pending.message_id, f"file:{file_id}")
+                        admin = UserRepository(db).get_by_user_id(pending.from_admin_id)
+                        admin_telegram_id = admin.telegram_id if admin else None
+                        user_name = _msg_user.full_name
+        if pending and file_id and admin_telegram_id:
+            try:
+                caption = f"📎 *File Response*\n\nFrom: *{user_name}*"
+                if is_doc:
+                    await context.bot.send_document(
+                        chat_id=admin_telegram_id,
+                        document=file_id,
+                        caption=caption,
+                        parse_mode="Markdown")
+                else:
+                    await context.bot.send_photo(
+                        chat_id=admin_telegram_id,
+                        photo=file_id,
+                        caption=caption,
+                        parse_mode="Markdown")
+            except Exception as e:
+                logger.error(f"Failed to send file response to admin: {e}")
+            await update.message.reply_text("✅ Your file has been sent to the admin.")
             return
 
     # 6. Rate input
@@ -389,7 +535,6 @@ async def smart_message_handler(update: Update,
     if update.message and update.message.text:
         from handlers.callbacks import handle_text_in_context
         await handle_text_in_context(update, context)
-
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 
@@ -435,7 +580,6 @@ def setup_scheduler(app: Application) -> AsyncIOScheduler:
         lambda: asyncio.run_coroutine_threadsafe(job_payment_reminders(bot), loop),
         CronTrigger(hour=8, minute=0))
     return scheduler
-
 
 # ── Handler registration ──────────────────────────────────────────────────────
 
@@ -533,7 +677,6 @@ def register_handlers(app: Application):
         smart_message_handler
     ))
 
-
 async def _handle_zoom_request(update: Update,
                                 context: ContextTypes.DEFAULT_TYPE):
     """Tutor taps 'Submit Zoom Link' button — sets context and prompts."""
@@ -551,7 +694,6 @@ async def _handle_zoom_request(update: Update,
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("✕ Cancel", callback_data="cancel_zoom")
         ]]))
-
 
 async def _handle_upload_select(update: Update,
                                  context: ContextTypes.DEFAULT_TYPE):
@@ -580,7 +722,7 @@ def run_dummy_server():
 
 async def main_async():
     print("=" * 52)
-    print("   EDUCONNECT TUTORING BOT")
+    print("   AKEW TUTORING BOT")
     print("=" * 52)
 
     if not BOT_TOKEN:
@@ -648,13 +790,11 @@ async def main_async():
         await app.stop()
         await app.shutdown()
 
-
 def main():
     # Start a fake web server in a separate background thread
     threading.Thread(target=run_dummy_server, daemon=True).start()
 
     asyncio.run(main_async())
-
 
 if __name__ == "__main__":
     main()

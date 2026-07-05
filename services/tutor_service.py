@@ -55,8 +55,8 @@ class TutorService:
             return "full"
         return "available"
 
-    def get_available_tutors_for_subject(self, subject: str,
-                                          include_full: bool = False) -> list:
+    def get_available_tutors_for_subject(self, subject: str, include_full: bool = False,
+                                      exclude_tutor_id: str = None) -> list:
         """
         Returns tutors who can teach the given subject.
         Marks each as primary/secondary match and available/full.
@@ -78,6 +78,8 @@ class TutorService:
         subj_lower = subject.lower()
 
         for tut in tutors:
+            if exclude_tutor_id and tut.user_id == exclude_tutor_id:
+                continue
             user = self.users.get_by_user_id(tut.user_id)
             primary = [s.strip() for s in (tut.primary_subjects or "").split(",") if s.strip()]
             secondary = [s.strip() for s in (tut.secondary_subjects or "").split(",") if s.strip()]
@@ -163,6 +165,22 @@ class TutorService:
                 bl = Blacklist(telegram_id=user.telegram_id, reason=reason)
                 self.db.add(bl)
         self.db.commit()
+
+    def unblacklist_tutor(self, tutor_id: str):
+        """Reverse a blacklist — tutor must go through document review again."""
+        tut = self.tutors.get(tutor_id)
+        user = self.users.get_by_user_id(tutor_id)
+        if tut:
+            tut.is_blacklisted = False
+            tut.approval_status = "pending_documents"
+            tut.rejection_reason = None
+        if user:
+            user.is_active = True
+            user.is_verified = False
+        self.db.commit()
+        # Deliberately NOT touching the Blacklist table — the tombstone stays
+        # as a historical record and only matters again if this account is
+        # later deleted and someone tries to re-register with the same telegram_id.
 
     def is_telegram_id_blacklisted(self, telegram_id: int) -> bool:
         """Check if a Telegram ID is permanently blacklisted."""

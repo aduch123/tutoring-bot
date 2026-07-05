@@ -1,0 +1,21 @@
+python3 -c "
+from config.db import SessionLocal
+from models.user import Student
+from models.payment import Payment
+from datetime import datetime, timedelta, date
+
+with SessionLocal() as db:
+    stu = db.query(Student).filter(Student.user_id == 'STU-0002').first()
+    stu.next_payment_due = datetime.now() - timedelta(days=1)
+    payments = db.query(Payment).filter(
+        Payment.student_id == 'STU-0002',
+        Payment.status == 'completed'
+    ).all()
+    today = date.today()
+    last_month = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
+    for p in payments:
+        p.month = last_month
+        print(f'Moved {p.transaction_id} to {last_month}')
+    db.commit()
+    print('Done — student is now overdue for next month')
+"

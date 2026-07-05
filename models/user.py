@@ -27,6 +27,7 @@ class Student(Base):
     parent_phone = Column(String(20))
     hourly_rate_etb = Column(Numeric(10, 2), nullable=True)
     subjects = Column(Text)
+    stream = Column(String(10), nullable=True)   # "Natural" | "Social" | None — only used for Grade 11/12
     days_per_week = Column(Integer, default=3)
     next_payment_due = Column(DateTime, nullable=True)
     payment_notified_days = Column(Integer, default=0)

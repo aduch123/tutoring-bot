@@ -7,7 +7,6 @@ from utils.helpers import reply
 
 logger = logging.getLogger(__name__)
 
-
 async def show_student_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from repositories.user import UserRepository, StudentRepository
     from services.schedule_service import ScheduleService
@@ -26,12 +25,15 @@ async def show_student_dashboard(update: Update, context: ContextTypes.DEFAULT_T
             return
 
         pay_svc = PaymentService(db)
-        unlocked = pay_svc.is_student_unlocked(user.user_id)
+        unlocked = pay_svc.is_student_unlocked_this_month(user.user_id)
 
         if not unlocked:
             pay_status = pay_svc.get_student_payment_status(user.user_id)
             has_screenshot = pay_status["status"] == "screenshot_uploaded"
-            text = locked_dashboard(user.full_name, has_screenshot)
+            from services.payment_service import PaymentService
+            all_payments = pay_svc.payments.get_by_student(user.user_id)
+            is_first = not any(p.status == "completed" for p in all_payments)
+            text = locked_dashboard(user.full_name, has_screenshot, is_first_payment=is_first)
             kbd = student_locked_menu()
         else:
             upcoming = ScheduleService(db).get_student_upcoming_sessions(user.user_id)
@@ -58,7 +60,6 @@ async def show_student_dashboard(update: Update, context: ContextTypes.DEFAULT_T
             text, parse_mode=ParseMode.MARKDOWN,
             reply_markup=kbd, disable_web_page_preview=True)
 
-
 async def show_tutor_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from repositories.user import UserRepository, TutorRepository
     from services.schedule_service import ScheduleService
@@ -77,6 +78,16 @@ async def show_tutor_dashboard(update: Update, context: ContextTypes.DEFAULT_TYP
             return
         tut = TutorRepository(db).get(user.user_id)
         approval_status = tut.approval_status if tut else None
+
+    if approval_status == "blacklisted":
+        await reply(update,
+            "⛔ *Account Restricted*\n\n"
+            "Your account has been permanently restricted from EduConnect.")
+        return
+
+    if not user.is_active:
+        await reply(update, "🚫 Your account has been suspended. Please contact an admin.")
+        return
 
     # ── Pending states: show a holding screen instead of the full dashboard ──
     if approval_status == "pending_documents":
@@ -119,7 +130,6 @@ async def show_tutor_dashboard(update: Update, context: ContextTypes.DEFAULT_TYP
             text, parse_mode=ParseMode.MARKDOWN,
             reply_markup=kbd, disable_web_page_preview=True)
 
-
 async def show_admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from repositories.user import UserRepository
     from services.audit_service import AuditService
@@ -148,7 +158,6 @@ async def show_admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYP
             text, parse_mode=ParseMode.MARKDOWN,
             reply_markup=kbd, disable_web_page_preview=True)
 
-
 async def route_to_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from repositories.user import UserRepository
     with next(get_db()) as db:
@@ -160,6 +169,10 @@ async def route_to_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await reply(update, welcome_unregistered(update.effective_user.first_name),
                     reply_markup=unregistered_menu())
         return
+    
+    if user.role == "tutor":
+        await show_tutor_dashboard(update, context)
+        return
 
     if not user.is_active:
         await reply(update, "🚫 Your account has been suspended. Please contact an admin.")
@@ -167,7 +180,29 @@ async def route_to_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if user.role == "student":
         await show_student_dashboard(update, context)
-    elif user.role == "tutor":
-        await show_tutor_dashboard(update, context)
     elif user.role == "admin":
         await show_admin_dashboard(update, context)
+
+async def check_student_locked(update: Update, context: ContextTypes.DEFAULT_TYPE, user) -> bool:
+    """
+    Returns True and shows locked screen if student payment is overdue.
+    Returns False if student is unlocked or user is not a student.
+    Call this at the top of any handler that should be gated.
+    """
+    if not user or user.role != "student":
+        return False
+    from services.payment_service import PaymentService
+    from ui.payment_page import locked_dashboard
+    from ui.keyboards import student_locked_menu
+    from telegram.constants import ParseMode
+    with next(get_db()) as db:
+        pay_svc = PaymentService(db)
+        if pay_svc.is_student_unlocked_this_month(user.user_id):
+            return False
+        pay_status = pay_svc.get_student_payment_status(user.user_id)
+        has_screenshot = pay_status["status"] == "screenshot_uploaded"
+    all_payments = pay_svc.payments.get_by_student(user.user_id)
+    is_first = not any(p.status == "completed" for p in all_payments)
+    text = locked_dashboard(user.full_name, has_screenshot, is_first_payment=is_first)
+    await reply(update, text, reply_markup=student_locked_menu())
+    return True

@@ -61,3 +61,16 @@ class MessagingService:
         from models.messaging import MessageLog
         return self.db.query(MessageLog).filter(
             MessageLog.message_id == message_id).first()
+
+    def get_pending_response(self, user_id: str, response_type: str = None):
+        """Get a message awaiting a text or file response from this user."""
+        from models.messaging import MessageLog
+        query = self.db.query(MessageLog).filter(
+            MessageLog.to_user_id == user_id,
+            MessageLog.user_response == None,
+        )
+        if response_type:
+            query = query.filter(MessageLog.response_type == response_type)
+        else:
+            query = query.filter(MessageLog.response_type.in_(["text", "file_upload"]))
+        return query.order_by(MessageLog.responded_at.desc()).first()

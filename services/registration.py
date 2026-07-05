@@ -29,7 +29,7 @@ class RegistrationService:
         })
         rate = get_rate_for_grade(grade or "Other")
         from datetime import timedelta
-        next_due = datetime.now() + timedelta(days=30)
+        next_due = datetime.now()
         self.students.create({
             "user_id": uid, "grade": grade, "parent_phone": parent_phone,
             "subjects": subjects, "days_per_week": days_per_week,
@@ -101,7 +101,7 @@ class RegistrationService:
         tut.id_verified = True
         user.is_verified = True
         self.db.commit()
-        return {"success": True, "telegram_id": user.telegram_id, "full_name": user.full_name}
+        return {"success": True, "telegram_id": user.telegram_id, "full_name": user.full_name, "message": f"Tutor {user.full_name} has been approved successfully!\n\nTutor ID: {tutor_user_id}"}
 
     def reject_tutor_video(self, tutor_user_id: str, admin_telegram_id: int, reason: str):
         """Final rejection — permanently blacklist the tutor."""

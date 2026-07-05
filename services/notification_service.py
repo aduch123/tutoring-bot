@@ -327,13 +327,13 @@ async def job_payment_reminders(bot: Bot):
         for stu in students:
             if not stu.next_payment_due:
                 continue
-            days_until = (stu.next_payment_due - now).days
             user = db.query(User).filter(User.user_id == stu.user_id).first()
             if not user or not user.is_active:
                 continue
+            days_until = (stu.next_payment_due - now).days
+            rate = pay_svc.get_student_rate(stu.user_id)
+            monthly = (stu.days_per_week or 3) * 4 * rate
             if days_until in (5, 3, 1):
-                rate = pay_svc.get_student_rate(stu.user_id)
-                monthly = (stu.days_per_week or 3) * 4 * rate
                 await _safe_send(bot, user.telegram_id,
                     f"💳 *Payment Reminder*\n\n"
                     f"Your monthly payment of *{monthly:.0f} ETB* is due in "
@@ -345,16 +345,18 @@ async def job_payment_reminders(bot: Bot):
                     f"💳 *Payment Due Today*\n\n"
                     f"Your payment is due today.\n"
                     f"Please complete payment to avoid session suspension.")
-            elif days_until < 0 and not pay_svc.is_student_unlocked(stu.user_id):
-                # Lock dashboard and cancel sessions
+            elif days_until < 0:
+                logger.info(f"[Scheduler] Student {stu.user_id} is {abs(days_until)} day(s) overdue.")
                 await _handle_overdue_student(bot, db, stu, user, pay_svc)
 
-
 async def _handle_overdue_student(bot, db, stu, user, pay_svc):
-    """Cancel future sessions for overdue student."""
-    from models.schedule import Session as SM, Schedule
-    if pay_svc.is_student_unlocked(stu.user_id):
-        return
+    """Cancel future sessions and lock the student out immediately."""
+    from models.schedule import Session as SM
+    from ui.payment_page import locked_dashboard
+    from ui.keyboards import student_locked_menu
+    from telegram.constants import ParseMode
+
+    # Cancel all future sessions regardless
     future_sessions = db.query(SM).filter(
         SM.student_id == stu.user_id,
         SM.status.in_(["scheduled", "zoom_pending", "zoom_ready"]),
@@ -363,13 +365,21 @@ async def _handle_overdue_student(bot, db, stu, user, pay_svc):
     for s in future_sessions:
         s.status = "cancelled"
     db.commit()
-    if future_sessions:
-        await _safe_send(bot, user.telegram_id,
-            f"🔒 *Sessions Suspended*\n\n"
-            f"Your payment is overdue. Your upcoming sessions have been paused.\n\n"
-            f"Please complete your payment to resume sessions.\n"
-            f"Tap 💳 Payments on your dashboard.")
 
+    # Always send the locked dashboard — whether they had sessions or not
+    pay_status = pay_svc.get_student_payment_status(stu.user_id)
+    has_screenshot = pay_status["status"] == "screenshot_uploaded"
+    text = locked_dashboard(user.full_name, has_screenshot, is_first_payment=False)
+
+    try:
+        await bot.send_message(
+            chat_id=user.telegram_id,
+            text=text,
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=student_locked_menu(),
+            disable_web_page_preview=True)
+    except Exception as e:
+        logger.error(f"Failed to send locked dashboard to {user.telegram_id}: {e}")
 
 # ── Mark missed sessions ──────────────────────────────────────────────────────
 

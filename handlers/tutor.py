@@ -171,7 +171,7 @@ async def upload_session_selected(update: Update,
         f"📹 *Upload Recording*\n\n"
         f"Session: `{session_id}`\n\n"
         f"Send the recording file:\n"
-        f"_(MP4, MKV, or AVI — max 500MB)_",
+        f"_(MP4, MKV, or AVI — max 2000MB)_",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=_kb([[
             InlineKeyboardButton("✕ Cancel", callback_data="back")
@@ -193,17 +193,11 @@ async def receive_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_ext = os.path.splitext(file_name)[1] or ".mp4"
     file_size = file_obj.file_size or 0
 
-    await update.message.reply_text("⏳ Saving recording...")
-
-    tg_file = await context.bot.get_file(file_obj.file_id)
-    temp_path = f"/tmp/{session_id}_temp{file_ext}"
-    await tg_file.download_to_drive(temp_path)
-
     with next(get_db()) as db:
         result = RecordingService(db).upload(
             tutor_telegram_id=update.effective_user.id,
             session_id=session_id,
-            temp_path=temp_path,
+            file_id=file_obj.file_id,
             file_size=file_size,
             file_ext=file_ext,
         )
@@ -212,22 +206,21 @@ async def receive_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ {result['message']}", reply_markup=_back())
         return ConversationHandler.END
 
-    # Notify admins for review
-    from config.config import ADMIN_TELEGRAM_IDS, ADMIN_GROUP_CHAT_ID
-    review_kb = _kb([[
-        InlineKeyboardButton("✅ Approve", callback_data=f"approve_recording_{session_id}"),
-        InlineKeyboardButton("❌ Reject", callback_data=f"reject_recording_{session_id}"),
-    ]])
-
+    # Forward the actual video to admins for review (server-side copy — no download, no size limit)
+    from config.config import ADMIN_GROUP_CHAT_ID
     if ADMIN_GROUP_CHAT_ID:
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_GROUP_CHAT_ID,
-                text=f"📹 *Recording Uploaded*\n\n"
+                text=f"📹 *New Recording Submitted*\n\n"
                      f"Session: `{session_id}`\n"
-                     f"Please review and approve.",
+                     f"Submitted: {datetime.now().strftime('%d %b %Y · %H:%M')}\n\n"
+                     f"Tap below to claim and review this recording.",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=review_kb)
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🎬 Claim & Review",
+                        callback_data=f"claim_review_recording_{session_id}")
+                ]]))
         except Exception:
             pass
 

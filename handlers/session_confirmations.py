@@ -61,7 +61,6 @@ async def handle_start_confirm(update: Update, context: ContextTypes.DEFAULT_TYP
         f"Have a great session! 🎓",
         parse_mode=ParseMode.MARKDOWN)
 
-
 @handle_errors
 async def handle_start_decline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Tutor or student declines session start."""
@@ -93,6 +92,12 @@ async def handle_start_decline(update: Update, context: ContextTypes.DEFAULT_TYP
         tutor = UserRepository(db).get_by_user_id(ses.tutor_id)
         student = UserRepository(db).get_by_user_id(ses.student_id)
 
+        # Capture everything needed after the block closes — BEFORE closing
+        session_subject = ses.subject
+        session_time = ses.scheduled_start.strftime('%H:%M')
+        tutor_name = tutor.full_name if tutor else ses.tutor_id
+        student_name = student.full_name if student else ses.student_id
+
     await query.edit_message_text(
         "✅ Noted. An admin has been notified.",
         parse_mode=ParseMode.MARKDOWN)
@@ -101,18 +106,17 @@ async def handle_start_decline(update: Update, context: ContextTypes.DEFAULT_TYP
     kb = None
     if not is_student:
         kb = _kb([[InlineKeyboardButton(
-            "🔄 Assign Replacement",
-            callback_data=f"assign_replacement_{session_id}")]])
+            "🚨 Claim & Handle Absence",
+            callback_data=f"claim_absence_{session_id}")]])
     await notify_admin_group(
         context.bot,
         f"🚨 *{role} Declined Session*\n\n"
         f"Session: `{session_id}`\n"
-        f"Subject: {ses.subject}\n"
-        f"Tutor: {tutor.full_name if tutor else ses.tutor_id}\n"
-        f"Student: {student.full_name if student else ses.student_id}\n"
-        f"Time: {ses.scheduled_start.strftime('%H:%M')}",
+        f"Subject: {session_subject}\n"
+        f"Tutor: {tutor_name}\n"
+        f"Student: {student_name}\n"
+        f"Time: {session_time}",
         reply_markup=kb)
-
 
 @handle_errors
 async def handle_end_confirm_tutor(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -138,7 +142,6 @@ async def handle_end_confirm_tutor(update: Update, context: ContextTypes.DEFAULT
         f"Tap 📹 *Upload Recording* on your dashboard.",
         parse_mode=ParseMode.MARKDOWN)
 
-
 @handle_errors
 async def handle_end_confirm_student(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Student confirms session end."""
@@ -160,7 +163,6 @@ async def handle_end_confirm_student(update: Update, context: ContextTypes.DEFAU
         f"✅ *Attendance confirmed!*\n\nThank you for confirming. 🎓",
         parse_mode=ParseMode.MARKDOWN)
 
-
 @handle_errors
 async def handle_end_issue(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """User reports issue at session end."""
@@ -175,7 +177,6 @@ async def handle_end_issue(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Please describe what happened:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=_back())
-
 
 @handle_errors
 async def handle_recording_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -197,11 +198,15 @@ async def handle_recording_approve(update: Update, context: ContextTypes.DEFAULT
         ses.status = "completed"
         # Increment tutor session count
         from models.user import Tutor
-        tut = db.query(Tutor).filter(Tutor.user_id == ses.tutor_id).first()
+        payout_tutor_id = ses.replacement_tutor_id or ses.tutor_id
+        tut = db.query(Tutor).filter(Tutor.user_id == payout_tutor_id).first()
         if tut:
             tut.total_sessions = (tut.total_sessions or 0) + 1
         db.commit()
         tutor = UserRepository(db).get_by_user_id(ses.tutor_id)
+
+        # Capture everything needed after the block closes — BEFORE closing
+        session_subject = ses.subject
 
     await query.edit_message_text(
         f"✅ *Recording approved!*\n\n"
@@ -211,9 +216,8 @@ async def handle_recording_approve(update: Update, context: ContextTypes.DEFAULT
     if tutor:
         await send(context.bot, tutor.telegram_id,
             f"✅ *Session Approved*\n\n"
-            f"Your recording for `{session_id}` ({ses.subject}) has been approved.\n"
+            f"Your recording for `{session_id}` ({session_subject}) has been approved.\n"
             f"This session counts toward your monthly payout. 🎉")
-
 
 @handle_errors
 async def handle_recording_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -228,7 +232,6 @@ async def handle_recording_reject(update: Update, context: ContextTypes.DEFAULT_
         f"Please state the reason for rejection:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=_back())
-
 
 # ── Replacement tutor assignment ──────────────────────────────────────────────
 
@@ -248,7 +251,8 @@ async def assign_replacement_start(update: Update, context: ContextTypes.DEFAULT
             await query.edit_message_text("❌ Session not found.")
             return
 
-        tutors = TutorService(db).get_available_tutors_for_subject(ses.subject)
+        tutors = TutorService(db).get_available_tutors_for_subject(
+            ses.subject, exclude_tutor_id=ses.tutor_id)
         student = UserRepository(db).get_by_user_id(ses.student_id)
         original_tutor = UserRepository(db).get_by_user_id(ses.tutor_id)
 
@@ -280,7 +284,6 @@ async def assign_replacement_start(update: Update, context: ContextTypes.DEFAULT
             reply_markup=_kb(rows))
     return REPLACEMENT_SELECT
 
-
 @handle_errors
 async def do_assign_replacement(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin confirms replacement tutor selection."""
@@ -298,27 +301,39 @@ async def do_assign_replacement(update: Update, context: ContextTypes.DEFAULT_TY
             return
         new_tutor = UserRepository(db).get_by_user_id(tutor_id)
         student = UserRepository(db).get_by_user_id(ses.student_id)
+
+        # Extract all values needed outside the session BEFORE closing
         ses.replacement_tutor_id = tutor_id
         ses.status = "zoom_ready" if ses.zoom_link else "zoom_pending"
         db.commit()
 
+        # Capture everything needed after the block
+        new_tutor_name = new_tutor.full_name if new_tutor else tutor_id
+        new_tutor_telegram_id = new_tutor.telegram_id if new_tutor else None
+        student_name = student.full_name if student else ses.student_id
+        student_telegram_id = student.telegram_id if student else None
+        session_subject = ses.subject
+        session_time = ses.scheduled_start.strftime('%H:%M')
+        zoom_link = ses.zoom_link
+
     await query.edit_message_text(
         f"✅ *Replacement Assigned*\n\n"
         f"Session: `{session_id}`\n"
-        f"New tutor: *{new_tutor.full_name if new_tutor else tutor_id}*",
+        f"New tutor: *{new_tutor_name}*",
         parse_mode=ParseMode.MARKDOWN)
 
-    if new_tutor:
-        await send(context.bot, new_tutor.telegram_id,
+    if new_tutor_telegram_id:
+        await send(context.bot, new_tutor_telegram_id,
             f"🔄 *You've Been Assigned as Replacement Tutor*\n\n"
             f"Session: `{session_id}`\n"
-            f"Subject: {ses.subject}\n"
-            f"Student: {student.full_name if student else ses.student_id}\n"
-            f"Time: {ses.scheduled_start.strftime('%H:%M')}\n\n"
-            + (f"🔗 Zoom: {ses.zoom_link}" if ses.zoom_link else
-               f"Please submit your Zoom link — tap the button in your Sessions screen."))
-    if student:
-        await send(context.bot, student.telegram_id,
+            f"Subject: {session_subject}\n"
+            f"Student: {student_name}\n"
+            f"Time: {session_time}\n\n"
+            + (f"🔗 Zoom: {zoom_link}" if zoom_link else
+               "Please submit your Zoom link — tap the button in your Sessions screen."))
+
+    if student_telegram_id:
+        await send(context.bot, student_telegram_id,
             f"✅ *Replacement Tutor Assigned*\n\n"
-            f"A new tutor has been assigned for your {ses.subject} session.\n"
-            f"Time: {ses.scheduled_start.strftime('%H:%M')}")
+            f"A new tutor has been assigned for your {session_subject} session.\n"
+            f"Time: {session_time}")

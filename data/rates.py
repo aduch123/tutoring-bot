@@ -5,25 +5,23 @@ Monthly payment = days_per_week * 4 * rate_per_hour
 """
 
 GRADE_RATES = {
-    "Grade 1":  300,
-    "Grade 2":  300,
-    "Grade 3":  300,
-    "Grade 4":  300,
-    "Grade 5":  350,
-    "Grade 6":  350,
-    "Grade 7":  380,
-    "Grade 8":  380,
-    "Grade 9":  400,
-    "Grade 10": 400,
-    "Grade 11 — Natural": 450,
-    "Grade 11 — Social":  430,
-    "Grade 12 — Natural": 500,
-    "Grade 12 — Social":  480,
-    "University": 600,
-    "Other": 400,
+    "Grade 1":            350,
+    "Grade 2":            350,
+    "Grade 3":            350,
+    "Grade 4":            350,
+    "Grade 5":            350,
+    "Grade 6":            350,
+    "Grade 7":            350,
+    "Grade 8":            350,
+    "Grade 9":            350,
+    "Grade 10":           350,
+    "Grade 11 — Natural": 350,
+    "Grade 11 — Social":  350,
+    "Grade 12 — Natural": 350,
+    "Grade 12 — Social":  350,
 }
 
-DEFAULT_RATE = 400  # fallback if grade not found
+DEFAULT_RATE = 350
 
 
 def get_rate_for_grade(grade: str) -> int:

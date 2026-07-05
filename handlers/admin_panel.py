@@ -201,7 +201,9 @@ async def show_tutors_list(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     rows = []
     for t in chunk:
-        status = "✅" if t["is_verified"] and t["is_active"] else ("⏳" if not t["is_verified"] else "🚫")
+        status = ("⛔" if t["is_blacklisted"] else
+          "✅" if t["is_verified"] and t["is_active"] else
+          "⏳" if not t["is_verified"] else "🚫")
         rows.append([InlineKeyboardButton(
             f"{status}  {t['full_name']}  ·  {(t['subjects'] or '—')[:30]}",
             callback_data=f"tut_detail_{t['user_id']}"
@@ -226,10 +228,14 @@ async def show_tutors_list(update: Update, context: ContextTypes.DEFAULT_TYPE,
         InlineKeyboardButton("● Suspended" if filter_type == "suspended" else "🚫 Suspended",
                               callback_data="tutors_filter_suspended"),
     ])
+    rows.append([
+        InlineKeyboardButton("● Blacklisted" if filter_type == "blacklisted" else "⛔ Blacklisted",
+                              callback_data="tutors_filter_blacklisted"),
+    ])
     rows.append(_back_row("admin_home"))
 
     await reply(update,
-        f"👨‍🏫 *Tutors ({total})*\n_✅=Verified  ⏳=Pending  🚫=Suspended_\n\nTap a tutor for details:",
+        f"👨‍🏫 *Tutors ({total})*\n_✅=Verified  ⏳=Pending  🚫=Suspended ⛔=Blacklisted_\n\nTap a tutor for details:",
         reply_markup=_kb(rows))
 
 
@@ -272,7 +278,7 @@ async def tutor_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, tutor
         f"📊  Total sessions: {tut.total_sessions if tut else 0}\n"
         f"💰  Total earned: {total_earned:.0f} ETB\n"
         f"✅  Verified: {'Yes' if user.is_verified else '⏳ Pending'}\n"
-        f"⚡  Status: {'✅ Active' if user.is_active else '🚫 Suspended'}\n"
+        f"⚡  Status: {'⛔ Blacklisted' if (tut and tut.is_blacklisted) else ('✅ Active' if user.is_active else '🚫 Suspended')}\n"
         f"📅  Joined: {user.created_at.strftime('%d %b %Y')}\n\n"
     )
     if sched_lines:
@@ -281,30 +287,40 @@ async def tutor_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, tutor
         text += "📆 *Schedules:* None assigned"
 
     rows = []
-    approval_status = tut.approval_status if tut else None
-    if approval_status == "pending_documents":
-        rows.append([
-            InlineKeyboardButton("✅ Approve Docs", callback_data=f"approve_docs_{tutor_id}"),
-            InlineKeyboardButton("❌ Reject Docs", callback_data=f"reject_docs_{tutor_id}"),
-        ])
-    elif approval_status == "pending_video":
-        rows.append([
-            InlineKeyboardButton("✅ Approve Video", callback_data=f"approve_video_{tutor_id}"),
-            InlineKeyboardButton("🚫 Reject & Blacklist", callback_data=f"reject_video_{tutor_id}"),
-        ])
-    elif not user.is_verified:
+    if tut and tut.is_blacklisted:
+        if tut.rejection_reason:
+            text += f"\n\n🚫 *Blacklist reason:* {tut.rejection_reason}"
         rows.append([InlineKeyboardButton(
-            "✅ Approve Tutor", callback_data=f"approve_tut_{tutor_id}")])
-    rows.append([
-        InlineKeyboardButton("✏️ Edit", callback_data=f"edit_tutor_{tutor_id}"),
-        InlineKeyboardButton("📆 Schedules", callback_data=f"edit_schedule_tut_{tutor_id}"),
-    ])
-    rows.append([
-        InlineKeyboardButton(
-            "🚫 Suspend" if user.is_active else "✅ Activate",
-            callback_data=f"toggle_active_tut_{tutor_id}"),
-        InlineKeyboardButton("🗑️ Delete", callback_data=f"confirm_delete_tut_{tutor_id}"),
-    ])
+            "♻️ Remove from Blacklist", callback_data=f"confirm_unblacklist_tut_{tutor_id}")])
+    else:
+        approval_status = tut.approval_status if tut else None
+        if approval_status == "pending_documents":
+            rows.append([InlineKeyboardButton(
+                "📄 Show Documents", callback_data=f"show_docs_tut_{tutor_id}_{update.effective_user.id}")])
+            rows.append([
+                InlineKeyboardButton("✅ Approve Docs", callback_data=f"approve_docs_{tutor_id}"),
+                InlineKeyboardButton("❌ Reject Docs", callback_data=f"reject_docs_{tutor_id}"),
+            ])
+        elif approval_status == "pending_video":
+            rows.append([
+                InlineKeyboardButton("✅ Approve Video", callback_data=f"approve_video_{tutor_id}"),
+                InlineKeyboardButton("🚫 Reject & Blacklist", callback_data=f"reject_video_{tutor_id}"),
+            ])
+        elif not user.is_verified:
+            rows.append([InlineKeyboardButton(
+                "✅ Approve Tutor", callback_data=f"approve_tut_{tutor_id}")])
+        rows.append([
+            InlineKeyboardButton("✉️ Send Message", callback_data=f"send_message_{tutor_id}"),
+        ])
+        rows.append([
+            InlineKeyboardButton("✏️ Edit", callback_data=f"edit_tutor_{tutor_id}"),
+            InlineKeyboardButton("📆 Schedules", callback_data=f"edit_schedule_tut_{tutor_id}"),
+        ])
+        rows.append([
+            InlineKeyboardButton("🚫 Suspend" if user.is_active else "✅ Activate",
+                                  callback_data=f"toggle_active_tut_{tutor_id}"),
+            InlineKeyboardButton("🗑️ Delete", callback_data=f"confirm_delete_tut_{tutor_id}"),
+        ])
     rows.append(_back_row("tutors_filter_all"))
     await reply(update, text, reply_markup=_kb(rows))
 
@@ -766,8 +782,10 @@ async def show_compatible_tutors(update: Update, context: ContextTypes.DEFAULT_T
                 if uid not in seen:
                     seen[uid] = t
                     seen[uid]["matching_subjects"] = []
+                    seen[uid]["match_types"] = set()
                 seen[uid]["matching_subjects"].append(
                     f"{subj} ({'★' if t['match_type']=='primary' else '○'})")
+                seen[uid]["match_types"].add(t["match_type"])
 
         compatible = list(seen.values())
 
@@ -791,9 +809,9 @@ async def show_compatible_tutors(update: Update, context: ContextTypes.DEFAULT_T
 
     # Apply filter
     if filter_type == "primary":
-        filtered = [t for t in compatible if t["match_type"] == "primary"]
+        filtered = [t for t in compatible if "primary" in t["match_types"]]
     elif filter_type == "secondary":
-        filtered = [t for t in compatible if t["match_type"] == "secondary"]
+        filtered = [t for t in compatible if "secondary" in t["match_types"]]
     else:
         filtered = compatible
 
@@ -883,7 +901,7 @@ async def show_tutor_briefing(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["assigning_tutor_name"] = tut_user.full_name if tut_user else tutor_id
 
     await reply(update, text, reply_markup=_kb([
-        [InlineKeyboardButton("✅ Schedule Agreed — Proceed",
+        [InlineKeyboardButton("✅ Schedule Agreed",
                                callback_data=f"do_assign_{tutor_id}"),
          InlineKeyboardButton("❌ No Agreement",
                                callback_data=f"assign_tutor_{student_id}")],

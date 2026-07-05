@@ -35,7 +35,6 @@ async def reply(update: Update, text: str, reply_markup=None):
             reply_markup=reply_markup, disable_web_page_preview=True,
         )
 
-
 async def send(bot, chat_id: int, text: str, reply_markup=None):
     await bot.send_message(
         chat_id=chat_id, text=text,

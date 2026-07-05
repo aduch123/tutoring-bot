@@ -3,7 +3,7 @@
 TERMS_TEXT = """
 📜 *Terms & Conditions*
 
-By registering with EduConnect, you agree to the following:
+By registering with Akew Tutor, you agree to the following:
 
 *1. Account Responsibility*
 You are responsible for maintaining the confidentiality of your account. Any activity under your account is your responsibility.
@@ -24,7 +24,7 @@ Your personal information is kept confidential and will not be shared with third
 All sessions are conducted through Zoom. Recording sessions is mandatory for tutors. Any misuse of recordings is strictly prohibited.
 
 *7. Termination*
-EduConnect reserves the right to terminate any account that violates these terms without prior notice.
+Akew Tutor reserves the right to terminate any account that violates these terms without prior notice.
 
 By tapping ✅ I Agree, you confirm that you have read, understood, and agreed to these Terms & Conditions.
 """.strip()
@@ -33,7 +33,7 @@ By tapping ✅ I Agree, you confirm that you have read, understood, and agreed t
 POLICY_TEXT = """
 🔒 *Privacy Policy*
 
-EduConnect is committed to protecting your privacy.
+Akew Tutor is committed to protecting your privacy.
 
 *Data We Collect:*
 • Name, phone number, and Telegram ID
@@ -59,7 +59,7 @@ By registering, you consent to this Privacy Policy.
 TUTOR_RULES_TEXT = """
 👨‍🏫 *Tutor Rules & Regulations*
 
-As an EduConnect tutor, you must comply with the following:
+As an tutor for Akew Tutor students, you must comply with the following:
 
 *1. Punctuality*
 You must be present and ready at the exact scheduled session time. Repeated lateness or absence will result in suspension.
