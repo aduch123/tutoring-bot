@@ -783,20 +783,20 @@ async def main_async():
     scheduler.start()
 
     render_url = os.environ.get("RENDER_EXTERNAL_URL")
-    if render_url:
-        import urllib.request
-        def _ping():
-            try:
-                urllib.request.urlopen(render_url, timeout=5)
-            except Exception:
-                pass
-        scheduler.add_job(_ping, IntervalTrigger(minutes=10))
-    else:
-        logger.warning(
-            "RENDER_EXTERNAL_URL not set — self-ping keep-alive job is DISABLED. "
-            "If deployed on Render, set this env var (or confirm Render sets it "
-            "automatically) or the free service will sleep after 15 min idle."
-        )
+    # if render_url:
+    #     import urllib.request
+    #     def _ping():
+    #         try:
+    #             urllib.request.urlopen(render_url, timeout=5)
+    #         except Exception:
+    #             pass
+    #     scheduler.add_job(_ping, IntervalTrigger(minutes=10))
+    # else:
+    #     logger.warning(
+    #         "RENDER_EXTERNAL_URL not set — self-ping keep-alive job is DISABLED. "
+    #         "If deployed on Render, set this env var (or confirm Render sets it "
+    #         "automatically) or the free service will sleep after 15 min idle."
+    #     )
 
     # ── Watchdog: confirm the bot can actually still talk to Telegram ────────
     # This is separate from the dummy HTTP server above. That server can keep
