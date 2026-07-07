@@ -822,13 +822,11 @@ async def main_async():
             return None
 
     async def _watchdog():
-        # Log memory on every tick regardless of outcome — Free-tier Render
-        # instances don't expose a memory graph in the dashboard, so this is
-        # the only way to see whether usage is climbing toward the 512MB cap.
+        # Log memory on every tick regardless of outcome
         current_mb = _current_mem_mb()
         peak_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
         logger.info(f"Watchdog: memory current~{current_mb:.1f}MB peak~{peak_mb:.1f}MB")
-
+    
         try:
             await asyncio.wait_for(app.bot.get_me(), timeout=15)
             _health["last_ok"] = time.time()
@@ -839,12 +837,11 @@ async def main_async():
                 f"Watchdog: Telegram check failed "
                 f"({_watchdog_failures['count']}/{WATCHDOG_MAX_CONSECUTIVE_FAILURES}): {e}"
             )
-            if _watchdog_failures["count"] >= WATCHDOG_MAX_CONSECUTIVE_FAILURES:
-                logger.critical(
-                    "Watchdog: bot unresponsive for too long — forcing process "
-                    "exit so the host restarts the container."
-                )
-                os._exit(1)  # hard exit; a normal `return`/exception won't do
+            # ─── REMOVED THE os._exit(1) ──────────────────────────────────
+            # The bot will keep running even if Telegram is temporarily unreachable.
+            # Render's own health checks will restart the container if it truly dies.
+            # This prevents the watchdog from killing the bot during network hiccups.
+            # ───────────────────────────────────────────────────────────────
 
     scheduler.add_job(_watchdog, IntervalTrigger(minutes=2))
 
