@@ -1,16 +1,19 @@
 """Thread-safe sequential ID generation."""
 import threading
+from sqlalchemy import cast, Integer, func
 
 _lock = threading.Lock()
-
-
 class IDGenerator:
     @staticmethod
     def _next(prefix: str, model_class, id_field: str, db) -> str:
         with _lock:
+            col = getattr(model_class, id_field)
+            numeric_part = cast(func.split_part(col, '-', 2), Integer)
+
             last = (
                 db.query(model_class)
-                .order_by(getattr(model_class, id_field).desc())
+                .filter(col.like(f"{prefix}-%"))
+                .order_by(numeric_part.desc())
                 .first()
             )
             if last:
