@@ -83,7 +83,7 @@ class PaymentService:
         payment = self.payments.get_by_student_month(user.user_id, current_month)
         if not payment:
             # Auto-create invoice at student's rate
-            rate = self.get_student_rate(user.user_id)
+            rate = self.get_student_monthly_amount(user.user_id)
             txn = IDGenerator.transaction_id(self.db)
             payment = self.payments.create({
                 "transaction_id": txn,
@@ -214,6 +214,13 @@ class PaymentService:
         if s and s.hourly_rate_etb:
             return float(s.hourly_rate_etb)
         return DEFAULT_SESSION_RATE_ETB
+    
+    def get_student_monthly_amount(self, student_id: str) -> float:
+        """Monthly amount due = hourly rate * days_per_week * 4 weeks."""
+        s = self.students.get(student_id)
+        rate = self.get_student_rate(student_id)
+        days = s.days_per_week if s and s.days_per_week else 3
+        return rate * days * 4
 
     def set_student_rate(self, admin_telegram_id: int,
                           student_id: str, rate: float) -> dict:

@@ -52,7 +52,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from services.payment_service import PaymentService
         with next(get_db()) as db:
             u = user
-            rate = PaymentService(db).get_student_rate(u.user_id) if u else 400
+            rate = PaymentService(db).get_student_monthly_amount(u.user_id) if u else 300 * 3 * 4
         month = datetime.now().strftime("%B %Y")
         await reply(update, payment_page(rate, month, u.full_name if u else "Student"),
                     reply_markup=_locked_menu())
